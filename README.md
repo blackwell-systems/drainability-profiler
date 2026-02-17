@@ -397,6 +397,26 @@ This contract matches typical allocator usage patterns:
 
 The examples below demonstrate how different allocator types naturally satisfy this contract.
 
+### Real-World Integration: Temporal-Slab Allocator
+
+**See [`examples/temporal-slab/`](examples/temporal-slab/)** for a complete, production-ready integration with the [temporal-slab allocator](https://github.com/blackwell-systems/temporal-slab), an epoch-based memory allocator.
+
+This integration demonstrates:
+- **Conditional compilation:** Profiler is optional via `#ifdef ENABLE_DRAINPROF`
+- **Minimal instrumentation:** 4 calls across the entire allocator lifecycle
+- **Validated correctness:** CI tests validate DSR measurements and diagnostic mode
+- **Zero overhead when disabled:** All profiler code compiled out
+
+The integration includes two validation tests:
+1. **P-sweep validation:** Confirms DSR = 1.0 - p across violation rates {0.0, 0.01, 0.05, 0.10, 0.25, 0.50, 1.0}
+2. **Diagnostic validation:** Verifies diagnostic mode identifies allocation sites causing structural leaks
+
+Both tests run automatically in CI on every push. See the [temporal-slab integration README](examples/temporal-slab/README.md) for details.
+
+### Generic Integration Examples
+
+The examples below show integration patterns for different allocator types:
+
 ### Slab Allocator
 
 ```c
@@ -504,10 +524,26 @@ Severe structural leaks. Most granules cannot be reclaimed:
 
 ## Roadmap
 
-- **M1:** Core C library, production mode, slot array [COMPLETE]
-- **M2:** Diagnostic mode with allocation tracking [COMPLETE]
-- **M3:** Rust bindings [PLANNED]
-- **M4:** Prometheus export [PLANNED]
+### Completed
+
+- **M1:** Core C library, production mode, slot array ✓
+- **M2:** Diagnostic mode with allocation tracking ✓
+- **Phase 1 (Temporal-Slab Integration):**
+  - Phase 1.1: Instrument temporal-slab with conditional compilation ✓
+  - Phase 1.2: P-sweep validation (DSR = 1.0 - p) ✓
+  - Phase 1.3: Diagnostic mode validation ✓
+  - CI automation on GitHub Actions ✓
+
+### In Progress
+
+- **Phase 1.4:** Collect before/after metrics for blog post
+- **Phase 2:** Write blog post demonstrating structural leak detection
+
+### Planned
+
+- **M3:** Rust bindings
+- **M4:** Prometheus export
+- **Phase 3:** Hash map storage mode for sparse granule IDs
 
 ## Contributing
 
