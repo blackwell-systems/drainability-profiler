@@ -64,6 +64,10 @@ jobs:
     - name: Check status
       run: |
         cd drainability-profiler/examples/temporal-slab
+        echo "=== Test Output ==="
+        cat results.txt
+        echo ""
+        echo "=== Status Check ==="
         if grep -q "VALIDATION SUCCESS" results.txt; then
           echo "✓ Temporal-slab integration validated"
           exit 0
