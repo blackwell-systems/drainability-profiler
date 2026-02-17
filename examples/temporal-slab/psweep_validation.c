@@ -152,6 +152,9 @@ int main() {
         drainprof_snapshot_t snapshot;
         drainprof_snapshot(g_profiler, &snapshot);
 
+        printf("  Profiler state: allocs=%lu deallocs=%lu opens=%lu\n",
+               snapshot.total_allocs, snapshot.total_deallocs, snapshot.open_granules);
+
         double actual_dsr = snapshot.dsr;
         double error = fabs(actual_dsr - expected_dsr);
 
