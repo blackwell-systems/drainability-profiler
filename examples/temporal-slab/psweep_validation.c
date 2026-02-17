@@ -48,7 +48,7 @@ void run_workload(SlabAllocator* alloc, double p) {
 
         /* Close request: free allocations, but with probability p skip freeing */
         int leaked_this_request = 0;
-        for (int i = 0; i < ALLOCS_PER_EPOCH; i++) {
+        for (int i = 0; i < ALLOCS_PER_REQUEST; i++) {
             if (!allocs[i].ptr) continue;
 
             double r = (double)rand() / RAND_MAX;
@@ -67,7 +67,7 @@ void run_workload(SlabAllocator* alloc, double p) {
         epoch_close(alloc, epoch);
 
         /* Clean up leaked allocations after epoch closes (delayed free) */
-        for (int i = 0; i < ALLOCS_PER_EPOCH; i++) {
+        for (int i = 0; i < ALLOCS_PER_REQUEST; i++) {
             if (allocs[i].ptr) {
                 free_obj(alloc, allocs[i].handle);
             }
