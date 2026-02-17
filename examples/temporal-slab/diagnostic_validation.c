@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 extern drainprof* g_profiler;
 
@@ -135,7 +136,7 @@ int main() {
         return 1;
     }
 
-    printf("Allocation sites tracked: %zu\n", summary->site_count);
+    printf("Allocation sites tracked: %u\n", summary->site_count);
 
     /* Validate diagnostic results */
     int validation_passed = 1;
@@ -148,16 +149,16 @@ int main() {
 
         /* Find the allocation site from run_workload */
         printf("\nAllocation sites:\n");
-        for (size_t i = 0; i < summary->site_count; i++) {
-            drainprof_site_summary* site = &summary->sites[i];
-            printf("  Site %zu:\n", i);
-            printf("    Backtrace: %s\n", site->backtrace);
-            printf("    Total allocs: %lu\n", site->total_allocs);
-            printf("    Pinning events: %lu\n", site->pinning_events);
-            printf("    Granules pinned: %lu\n", site->granules_pinned);
+        for (uint32_t i = 0; i < summary->site_count; i++) {
+            drainprof_summary_site_entry* entry = &summary->sites[i];
+            printf("  Site %u:\n", i);
+            printf("    Location: %s:%u\n", entry->site.file, entry->site.line);
+            printf("    Total allocs: %u\n", entry->total_allocs);
+            printf("    Total bytes: %zu\n", entry->total_bytes);
+            printf("    Pinning count: %u\n", entry->pinning_count);
 
-            if (site->total_allocs > 0) {
-                double pinning_rate = (double)site->pinning_events / site->total_allocs;
+            if (entry->total_allocs > 0) {
+                double pinning_rate = (double)entry->pinning_count / entry->total_allocs;
                 printf("    Pinning rate: %.3f\n", pinning_rate);
 
                 /* Expected: pinning_rate ≈ VIOLATION_PROBABILITY (within 15% margin) */
@@ -174,14 +175,20 @@ int main() {
                     printf("    ✓ PASS: Pinning rate matches expected violation rate\n");
                 }
 
-                /* Granules pinned should be approximately equal to pinning events
-                   (since we have 1 alloc per epoch) */
-                if (site->granules_pinned != site->pinning_events) {
-                    printf("    ✗ FAIL: Granules pinned (%lu) != pinning events (%lu)\n",
-                           site->granules_pinned, site->pinning_events);
+                /* With 1 allocation per epoch, pinning_count should equal number
+                   of granules pinned (each leak pins its epoch) */
+                uint32_t expected_pinned = (uint32_t)(VIOLATION_PROBABILITY * NUM_REQUESTS);
+                uint32_t error_count = entry->pinning_count > expected_pinned ?
+                    entry->pinning_count - expected_pinned :
+                    expected_pinned - entry->pinning_count;
+
+                if (error_count > (uint32_t)(0.15 * NUM_REQUESTS)) {
+                    printf("    ✗ FAIL: Pinning count (%u) far from expected (%u)\n",
+                           entry->pinning_count, expected_pinned);
                     validation_passed = 0;
                 } else {
-                    printf("    ✓ PASS: Granules pinned matches pinning events\n");
+                    printf("    ✓ PASS: Pinning count reasonable (%u vs %u expected)\n",
+                           entry->pinning_count, expected_pinned);
                 }
             }
         }
