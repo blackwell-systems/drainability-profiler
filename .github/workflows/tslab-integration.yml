@@ -1,0 +1,73 @@
+name: Temporal-Slab Integration
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  integration-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout drainability-profiler
+      uses: actions/checkout@v3
+      with:
+        path: drainability-profiler
+
+    - name: Checkout temporal-slab
+      uses: actions/checkout@v3
+      with:
+        repository: blackwell-systems/temporal-slab
+        path: temporal-slab
+
+    - name: Build libdrainprof
+      run: |
+        cd drainability-profiler
+        make clean
+        make
+        ls -lh libdrainprof.a libdrainprof.so
+
+    - name: Build temporal-slab with profiler enabled
+      run: |
+        cd temporal-slab/src
+        make clean
+        make ENABLE_DRAINPROF=1 DRAINPROF_PATH=../../drainability-profiler slab_lib.o epoch_domain.o slab_stats.o
+
+    - name: Build p-sweep validation
+      run: |
+        cd drainability-profiler/examples/temporal-slab
+        gcc -O2 -std=c11 -pthread -Wall -Wextra -pedantic \
+          -I../../include -I../../../temporal-slab/include \
+          -DENABLE_RSS_RECLAMATION=1 -DENABLE_DRAINPROF \
+          psweep_validation.c \
+          ../../../temporal-slab/src/slab_lib.o \
+          ../../../temporal-slab/src/epoch_domain.o \
+          ../../../temporal-slab/src/slab_stats.o \
+          -L../.. -ldrainprof \
+          -o psweep_validation
+
+    - name: Run validation
+      run: |
+        cd drainability-profiler/examples/temporal-slab
+        ./psweep_validation | tee results.txt
+
+    - name: Upload results
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: integration-test-results
+        path: drainability-profiler/examples/temporal-slab/results.txt
+
+    - name: Check status
+      run: |
+        cd drainability-profiler/examples/temporal-slab
+        if grep -q "VALIDATION SUCCESS" results.txt; then
+          echo "✓ Temporal-slab integration validated"
+          exit 0
+        else
+          echo "✗ Integration test failed"
+          exit 1
+        fi
