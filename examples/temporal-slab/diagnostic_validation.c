@@ -85,8 +85,12 @@ void run_workload(SlabAllocator* alloc, double p) {
 int main() {
     printf("=== Temporal-Slab Diagnostic Mode Validation ===\n");
     printf("Testing diagnostic mode with p=%.2f violation rate\n\n", VIOLATION_PROBABILITY);
+    fflush(stdout);
 
     /* Create profiler in diagnostic mode */
+    printf("Creating profiler in diagnostic mode...\n");
+    fflush(stdout);
+
     drainprof_config config = {
         .mode = DRAINPROF_DIAGNOSTIC,
         .storage = DRAINPROF_SLOT_ARRAY,
@@ -95,46 +99,80 @@ int main() {
         .log_interval = 0,
         .on_pinning = NULL,
         .callback_user_data = NULL,
-        .max_buffered_reports = 0
+        .max_buffered_reports = 1000
     };
 
     g_profiler = drainprof_create_with_config(&config);
     if (!g_profiler) {
-        fprintf(stderr, "Failed to create profiler\n");
+        fprintf(stderr, "ERROR: Failed to create profiler\n");
+        fflush(stderr);
         return 1;
     }
+    printf("Profiler created successfully\n");
+    fflush(stdout);
 
     /* Create allocator */
+    printf("Creating allocator...\n");
+    fflush(stdout);
+
     SlabAllocator* alloc = slab_allocator_create();
     if (!alloc) {
-        fprintf(stderr, "Failed to create allocator\n");
+        fprintf(stderr, "ERROR: Failed to create allocator\n");
+        fflush(stderr);
         drainprof_destroy(g_profiler);
         return 1;
     }
+    printf("Allocator created successfully\n");
+    fflush(stdout);
 
     /* Run workload */
     printf("Running workload...\n");
+    fflush(stdout);
     run_workload(alloc, VIOLATION_PROBABILITY);
+    printf("Workload completed\n");
+    fflush(stdout);
 
     /* Read basic profiler metrics */
+    printf("Reading profiler metrics...\n");
+    fflush(stdout);
     drainprof_snapshot_t snapshot;
     drainprof_snapshot(g_profiler, &snapshot);
+    printf("Snapshot retrieved\n");
+    fflush(stdout);
 
     printf("\n=== Basic Metrics ===\n");
     printf("Total closes: %lu\n", snapshot.total_closes);
     printf("Drainable closes: %lu\n", snapshot.drainable_closes);
     printf("Pinned closes: %lu\n", snapshot.pinned_closes);
     printf("DSR: %.3f\n", snapshot.dsr);
+    printf("Total allocs: %lu\n", snapshot.total_allocs);
+    printf("Total deallocs: %lu\n", snapshot.total_deallocs);
+    fflush(stdout);
+
+    if (snapshot.pinned_closes == 0) {
+        fprintf(stderr, "WARNING: No pinned closes detected. Diagnostic reports may be empty.\n");
+        fflush(stderr);
+    }
 
     /* Generate diagnostic summary */
     printf("\n=== Diagnostic Summary ===\n");
+    fflush(stdout);
+
+    printf("Computing diagnostic summary...\n");
+    fflush(stdout);
+
     drainprof_diagnostic_summary* summary = drainprof_diagnostic_summary_compute(g_profiler);
     if (!summary) {
-        fprintf(stderr, "Failed to generate diagnostic summary\n");
+        fprintf(stderr, "ERROR: Failed to generate diagnostic summary\n");
+        fprintf(stderr, "This might indicate no reports were buffered.\n");
+        fflush(stderr);
         slab_allocator_free(alloc);
         drainprof_destroy(g_profiler);
         return 1;
     }
+
+    printf("Diagnostic summary computed successfully\n");
+    fflush(stdout);
 
     printf("Allocation sites tracked: %u\n", summary->site_count);
 
