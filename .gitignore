@@ -1,0 +1,25 @@
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+
+# Build directory
+build/
+
+# Editor/IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Core dumps and debugging
+core
+vgcore.*
+*.dSYM/
+
+# Test outputs
+*.log
