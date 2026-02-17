@@ -37,7 +37,7 @@ typedef struct {
     uint32_t intended_epoch;  /* Where it should have been routed */
 } Allocation;
 
-/* Mixed-routing workload: allocate objects, some routed to wrong epoch */
+/* Mixed-routing workload: long-lived session epoch with rotating request epochs */
 void run_mixed_routing(SlabAllocator* alloc, double p) {
     Allocation allocs[NUM_EPOCHS * ALLOCS_PER_EPOCH];
     int alloc_count = 0;
@@ -45,23 +45,31 @@ void run_mixed_routing(SlabAllocator* alloc, double p) {
 
     srand(42);  /* Deterministic seed */
 
-    for (int epoch_idx = 0; epoch_idx < NUM_EPOCHS; epoch_idx++) {
-        /* Advance to new epoch */
-        epoch_advance(alloc);
-        EpochId current = epoch_current(alloc);
+    /* Session epoch: remains open for entire workload */
+    epoch_advance(alloc);
+    EpochId session_epoch = epoch_current(alloc);
 
-        /* Allocate objects for this epoch */
+    for (int epoch_idx = 0; epoch_idx < NUM_EPOCHS; epoch_idx++) {
+        /* Advance to new request epoch */
+        epoch_advance(alloc);
+        EpochId request_epoch = epoch_current(alloc);
+
+        /* Allocate objects for this request */
         for (int i = 0; i < ALLOCS_PER_EPOCH; i++) {
-            /* With probability p, route to wrong epoch (session leak) */
+            /* With probability p, route to session epoch instead of request epoch */
             double r = (double)rand() / RAND_MAX;
             EpochId target_epoch;
+            bool is_violation;
 
-            if (r < p && epoch_idx > 0) {
-                /* Route to previous epoch (simulates session object) */
-                target_epoch = (current - 1 + 16) % 16;
+            if (r < p) {
+                /* Violation: route to session epoch (outlives request) */
+                target_epoch = session_epoch;
+                is_violation = true;
+                violation_count++;
             } else {
-                /* Route correctly to current epoch */
-                target_epoch = current;
+                /* Correct: route to request epoch */
+                target_epoch = request_epoch;
+                is_violation = false;
             }
 
             SlabHandle handle;
@@ -71,56 +79,40 @@ void run_mixed_routing(SlabAllocator* alloc, double p) {
                 allocs[alloc_count].ptr = ptr;
                 allocs[alloc_count].handle = handle;
                 allocs[alloc_count].target_epoch = target_epoch;
-                allocs[alloc_count].intended_epoch = current;
-                if (target_epoch != current) {
-                    violation_count++;
-                }
+                allocs[alloc_count].intended_epoch = request_epoch;
                 alloc_count++;
             }
         }
 
-        /* Close the oldest epoch (epoch that just aged out) */
+        /* Close old request epochs (keep session open) */
         if (epoch_idx >= 8) {
-            EpochId old_epoch = (current - 8 + 16) % 16;
+            EpochId old_request = request_epoch - 8;
 
-            /* Free allocations that were INTENDED for this epoch.
-             * Allocations routed to wrong epoch remain live and pin. */
+            /* Free allocations from this request epoch */
             for (int i = 0; i < alloc_count; i++) {
-                if (allocs[i].intended_epoch == old_epoch && allocs[i].ptr) {
+                if (allocs[i].intended_epoch == old_request && allocs[i].ptr) {
                     free_obj(alloc, allocs[i].handle);
                     allocs[i].ptr = NULL;
                 }
             }
 
-            /* Count how many violations should pin this epoch */
-            int expected_pins = 0;
-            for (int j = 0; j < alloc_count; j++) {
-                if (allocs[j].target_epoch == old_epoch &&
-                    allocs[j].intended_epoch != old_epoch &&
-                    allocs[j].ptr) {
-                    expected_pins++;
-                }
-            }
-
-            if (expected_pins > 0) {
-                printf("    Closing epoch %u with %d expected violations\n",
-                       old_epoch, expected_pins);
-            }
-
-            /* Now close the epoch - violations should pin it */
-            epoch_close(alloc, old_epoch);
+            /* Close the request epoch - violations (in session) should pin it */
+            epoch_close(alloc, old_request);
         }
     }
 
-    /* Clean up remaining allocations */
+    /* Clean up session epoch allocations */
     for (int i = 0; i < alloc_count; i++) {
         if (allocs[i].ptr) {
             free_obj(alloc, allocs[i].handle);
         }
     }
 
-    printf("  Total violations created: %d (%.1f%%)\n",
-           violation_count, 100.0 * violation_count / alloc_count);
+    /* Close session epoch */
+    epoch_close(alloc, session_epoch);
+
+    printf("  Total violations created: %d (expected ~%.0f)\n",
+           violation_count, p * NUM_EPOCHS * ALLOCS_PER_EPOCH);
 }
 
 int main() {
