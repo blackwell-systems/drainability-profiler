@@ -508,7 +508,6 @@ Severe structural leaks. Most granules cannot be reclaimed:
 - **M2:** Diagnostic mode with allocation tracking [COMPLETE]
 - **M3:** Rust bindings [PLANNED]
 - **M4:** Prometheus export [PLANNED]
-- **M5:** Blog post and announcement [PLANNED]
 
 ## Contributing
 
