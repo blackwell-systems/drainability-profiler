@@ -6,14 +6,13 @@ A lightweight C library for detecting structural memory leaks in coarse-grained 
 
 **Drainability** is a structural property of memory allocators that determines whether allocated granules (slabs, arenas, epochs, regions) can be reclaimed at their natural reclaim boundaries, even when all individual objects have been freed.
 
-### The Problem: Structural Leaks
+### Structural Leaks
 
-Traditional memory leak detectors (Valgrind, ASan) only detect **unreachable objects**—memory that was allocated but never freed. They miss **structural leaks**: situations where:
+Traditional memory leak detectors (Valgrind, ASan) track individual allocations and report unreachable objects. If you allocate memory and never free it, they catch it. But they miss **structural leaks** - a different class of bug where all individual objects are properly freed, yet the allocator can't reclaim memory.
 
-- All objects are properly freed
-- But granules can't be reclaimed because one long-lived allocation pins the entire granule
+Here's how it happens: many allocators work with large granules (slabs, arenas, epochs) that can only be reclaimed when completely empty. A single long-lived allocation pins the entire granule, even if everything else has been freed.
 
-**Example:** A slab allocator with 1000 slots. If 999 objects are freed but 1 remains, the entire slab (and its backing memory) cannot be reclaimed—even though 99.9% of objects are freed.
+**Example:** A slab allocator with 1000 slots. You allocate 1000 objects, then free 999 of them. The last object is still live, so the entire slab stays allocated. From Valgrind's perspective: everything's fine (all reachable). From the allocator's perspective: 100% memory retention despite 99.9% of objects freed.
 
 ### The Metric: DSR (Drainability Satisfaction Rate)
 
