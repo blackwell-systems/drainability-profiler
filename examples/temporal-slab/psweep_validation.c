@@ -133,6 +133,8 @@ int main() {
             return 1;
         }
 
+        printf("  Created profiler at %p\n", (void*)g_profiler);
+
         /* Create allocator */
         SlabAllocator* alloc = slab_allocator_create();
         if (!alloc) {
@@ -143,6 +145,8 @@ int main() {
 
         /* Run workload */
         run_mixed_routing(alloc, p);
+
+        printf("  After workload, g_profiler = %p\n", (void*)g_profiler);
 
         /* Read profiler metrics */
         drainprof_snapshot_t snapshot;
