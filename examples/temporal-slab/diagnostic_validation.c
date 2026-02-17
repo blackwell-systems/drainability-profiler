@@ -195,39 +195,35 @@ int main() {
             printf("    Total bytes: %zu\n", entry->total_bytes);
             printf("    Pinning count: %u\n", entry->pinning_count);
 
-            if (entry->total_allocs > 0) {
-                double pinning_rate = (double)entry->pinning_count / entry->total_allocs;
-                printf("    Pinning rate: %.3f\n", pinning_rate);
+            /* Note: total_allocs counts allocations that appeared in pinning
+               reports (live at granule close), not all allocations from this site.
+               So pinning_count / total_allocs is often ~1.0 and not meaningful. */
 
-                /* Expected: pinning_rate ≈ VIOLATION_PROBABILITY (within 15% margin) */
-                double expected = VIOLATION_PROBABILITY;
-                double error = fabs(pinning_rate - expected);
-                double margin = 0.15;  /* Allow 15% error for statistical variance */
+            /* The key validation: pinning_count should match expected violations */
+            uint32_t expected_violations = (uint32_t)(VIOLATION_PROBABILITY * NUM_REQUESTS);
+            uint32_t error_count = entry->pinning_count > expected_violations ?
+                entry->pinning_count - expected_violations :
+                expected_violations - entry->pinning_count;
 
-                printf("    Expected rate: %.3f (error: %.3f)\n", expected, error);
+            printf("    Expected violations: %u (observed %u, error %u)\n",
+                   expected_violations, entry->pinning_count, error_count);
 
-                if (error > margin) {
-                    printf("    ✗ FAIL: Pinning rate does not match expected violation rate\n");
-                    validation_passed = 0;
-                } else {
-                    printf("    ✓ PASS: Pinning rate matches expected violation rate\n");
-                }
+            /* Allow 15% error margin for statistical variance */
+            uint32_t margin = (uint32_t)(0.15 * NUM_REQUESTS);
+            if (error_count > margin) {
+                printf("    ✗ FAIL: Pinning count does not match expected violations\n");
+                validation_passed = 0;
+            } else {
+                printf("    ✓ PASS: Pinning count matches expected violations\n");
+            }
 
-                /* With 1 allocation per epoch, pinning_count should equal number
-                   of granules pinned (each leak pins its epoch) */
-                uint32_t expected_pinned = (uint32_t)(VIOLATION_PROBABILITY * NUM_REQUESTS);
-                uint32_t error_count = entry->pinning_count > expected_pinned ?
-                    entry->pinning_count - expected_pinned :
-                    expected_pinned - entry->pinning_count;
-
-                if (error_count > (uint32_t)(0.15 * NUM_REQUESTS)) {
-                    printf("    ✗ FAIL: Pinning count (%u) far from expected (%u)\n",
-                           entry->pinning_count, expected_pinned);
-                    validation_passed = 0;
-                } else {
-                    printf("    ✓ PASS: Pinning count reasonable (%u vs %u expected)\n",
-                           entry->pinning_count, expected_pinned);
-                }
+            /* Verify that total_allocs equals pinning_count (all tracked allocs pinned) */
+            if (entry->total_allocs != entry->pinning_count) {
+                printf("    ⚠ WARNING: total_allocs (%u) != pinning_count (%u)\n",
+                       entry->total_allocs, entry->pinning_count);
+                printf("    This may indicate allocations tracked but not pinning.\n");
+            } else {
+                printf("    ✓ All tracked allocations from this site caused pinning\n");
             }
         }
     }
