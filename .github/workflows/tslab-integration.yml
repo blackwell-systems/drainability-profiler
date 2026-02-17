@@ -52,7 +52,16 @@ jobs:
     - name: Run validation
       run: |
         cd drainability-profiler/examples/temporal-slab
-        ./psweep_validation | tee results.txt
+        echo "=== Running psweep_validation ==="
+        ls -lh psweep_validation
+        ldd psweep_validation || true
+        echo "=== Executing test ==="
+        ./psweep_validation 2>&1 | tee results.txt
+        EXIT_CODE=${PIPESTATUS[0]}
+        echo "Exit code: $EXIT_CODE"
+        if [ $EXIT_CODE -ne 0 ]; then
+          echo "Test crashed or failed with exit code $EXIT_CODE"
+        fi
 
     - name: Upload results
       if: always()
