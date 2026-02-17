@@ -115,9 +115,10 @@ int main() {
         /* Create profiler */
         drainprof_config config = {
             .mode = DRAINPROF_PRODUCTION,
-            .storage_backend = DRAINPROF_SLOT_ARRAY,
-            .slot_array_capacity = 32,
-            .verbose = false,
+            .storage = DRAINPROF_SLOT_ARRAY,
+            .slot_capacity = 32,
+            .bucket_count = 0,
+            .log_interval = 0,
             .on_pinning = NULL,
             .callback_user_data = NULL,
             .max_buffered_reports = 0
@@ -130,7 +131,7 @@ int main() {
         }
 
         /* Create allocator */
-        SlabAllocator* alloc = slab_create();
+        SlabAllocator* alloc = slab_allocator_create();
         if (!alloc) {
             fprintf(stderr, "Failed to create allocator\n");
             drainprof_destroy(g_profiler);
@@ -141,7 +142,7 @@ int main() {
         run_mixed_routing(alloc, p);
 
         /* Read profiler metrics */
-        drainprof_snapshot snapshot;
+        drainprof_snapshot_t snapshot;
         drainprof_snapshot(g_profiler, &snapshot);
 
         double actual_dsr = snapshot.dsr;
@@ -165,7 +166,7 @@ int main() {
                snapshot.pinned_closes);
 
         /* Cleanup */
-        slab_destroy(alloc);
+        slab_allocator_free(alloc);
         drainprof_destroy(g_profiler);
         g_profiler = NULL;
 
