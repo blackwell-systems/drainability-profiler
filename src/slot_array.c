@@ -94,8 +94,22 @@ uint32_t drainprof_slot_array_close(
     uint32_t live_count = atomic_load(&slot->live_count);
 
     /* Clear the slot for reuse.
-     * Important: clear live_count first, then occupied.
-     * This prevents concurrent alloc_register from hitting a half-cleared slot. */
+     *
+     * CORRECTNESS NOTE: This store sequence is safe because the API contract
+     * requires that no concurrent alloc_register/deregister calls for this
+     * granule_id are in flight when close is called. The caller must ensure
+     * all allocation activity has quiesced before closing.
+     *
+     * Without this precondition, there would be a race:
+     *   Thread A: reads live_count = 3
+     *   Thread B: alloc_register does atomic_fetch_add, making it 4
+     *   Thread A: atomic_store(&live_count, 0) clobbers Thread B's increment
+     *
+     * The precondition eliminates this race. Epoch-based allocators satisfy
+     * this naturally (close epoch only after advancing past it). Arena and
+     * slab allocators close only when all users have released the granule.
+     *
+     * Clear order: live_count → granule_id → occupied (release slot last). */
     atomic_store(&slot->live_count, 0);
     atomic_store(&slot->granule_id, 0);
     atomic_store(&slot->occupied, 0);  /* Release the slot */

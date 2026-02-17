@@ -218,6 +218,16 @@ int drainprof_granule_open(drainprof *prof, drainprof_granule_id id);
 /** Notify the profiler that a granule's reclaim boundary has been reached.
  *  Returns 1 if the granule was drainable, 0 if pinned, -1 on error.
  *
+ *  IMPORTANT PRECONDITION: The caller MUST ensure that no concurrent
+ *  alloc_register or alloc_deregister calls for this granule_id are in
+ *  flight when granule_close is called. All allocation activity for this
+ *  granule must have completed before closing it.
+ *
+ *  This contract matches typical allocator usage patterns:
+ *  - Epoch-based allocators: Close epoch only after advancing past it
+ *  - Arena allocators: Close arena only after all users have released it
+ *  - Slab allocators: Close slab only when returning to pool
+ *
  *  Production mode (slot array): O(1), lock-free.
  *  Production mode (hash map): O(1) amortized, write lock.
  *  Diagnostic mode (pinned): O(n) where n = live allocs in granule. */

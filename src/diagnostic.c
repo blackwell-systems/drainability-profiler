@@ -411,7 +411,12 @@ int drainprof_slot_array_diag_close(
         return -1;
     }
 
-    /* Return diagnostic state to caller */
+    /* Return diagnostic state to caller.
+     *
+     * CORRECTNESS NOTE: Safe to extract diag struct because the API contract
+     * requires no concurrent alloc_register/deregister calls for this granule_id
+     * are in flight when close is called. Without this precondition, a concurrent
+     * alloc_register could be appending to diag->allocs while we extract it. */
     *out_diag = slot->diag;
     slot->diag = NULL;
 

@@ -60,6 +60,8 @@ drainprof_alloc_register(prof, granule_id, alloc_id, size);
 drainprof_alloc_deregister(prof, granule_id, alloc_id);
 
 // Close granule and check drainability
+// IMPORTANT: Ensure no concurrent alloc_register/deregister calls
+// for this granule_id are in flight when calling close
 int drainable = drainprof_granule_close(prof, granule_id);
 // drainable = 1 if no live allocations, 0 if pinned
 
@@ -380,6 +382,20 @@ The library validates the drainability theorem from the paper:
 Test results confirm **DSR = 1.0 - p** exactly for all p-values.
 
 ## Integration Examples
+
+### Concurrency Contract
+
+**IMPORTANT:** When calling `drainprof_granule_close()`, you must ensure that no concurrent `alloc_register` or `alloc_deregister` calls for that `granule_id` are in flight. All allocation activity for the granule must have completed before closing it.
+
+This contract matches typical allocator usage patterns:
+
+- **Epoch-based allocators**: Close an epoch only after advancing past it. New allocations go to the new epoch, so no concurrent activity on the old epoch.
+- **Arena allocators**: Close an arena only after all users have released it. The arena is destroyed when the last reference is dropped.
+- **Slab allocators**: Close a slab only when returning it to the pool. The allocator stops routing allocations to that slab before closing it.
+
+**Why this matters:** Without this precondition, there's a race where `granule_close` reads the live count while a concurrent `alloc_register` increments it, then `close` zeros the live count, silently losing the concurrent allocation. The precondition eliminates this race by requiring the caller to quiesce allocation activity first.
+
+The examples below demonstrate how different allocator types naturally satisfy this contract.
 
 ### Slab Allocator
 
