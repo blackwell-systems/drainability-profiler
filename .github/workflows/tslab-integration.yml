@@ -46,7 +46,7 @@ jobs:
           ../../../temporal-slab/src/slab_lib.o \
           ../../../temporal-slab/src/epoch_domain.o \
           ../../../temporal-slab/src/slab_stats.o \
-          -L../.. -ldrainprof \
+          ../../libdrainprof.a \
           -o psweep_validation
 
     - name: Run validation
