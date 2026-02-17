@@ -49,14 +49,41 @@ jobs:
           ../../libdrainprof.a \
           -o psweep_validation
 
-    - name: Run validation
+    - name: Run p-sweep validation
       run: |
         cd drainability-profiler/examples/temporal-slab
         echo "=== Running psweep_validation ==="
         ls -lh psweep_validation
         ldd psweep_validation || true
         echo "=== Executing test ==="
-        ./psweep_validation 2>&1 | tee results.txt
+        ./psweep_validation 2>&1 | tee psweep_results.txt
+        EXIT_CODE=${PIPESTATUS[0]}
+        echo "Exit code: $EXIT_CODE"
+        if [ $EXIT_CODE -ne 0 ]; then
+          echo "Test crashed or failed with exit code $EXIT_CODE"
+        fi
+
+    - name: Build diagnostic validation
+      run: |
+        cd drainability-profiler/examples/temporal-slab
+        gcc -O2 -std=c11 -pthread -Wall -Wextra -pedantic \
+          -I../../include -I../../../temporal-slab/include \
+          -DENABLE_RSS_RECLAMATION=1 -DENABLE_DRAINPROF \
+          diagnostic_validation.c \
+          ../../../temporal-slab/src/slab_lib.o \
+          ../../../temporal-slab/src/epoch_domain.o \
+          ../../../temporal-slab/src/slab_stats.o \
+          ../../libdrainprof.a \
+          -o diagnostic_validation
+
+    - name: Run diagnostic validation
+      run: |
+        cd drainability-profiler/examples/temporal-slab
+        echo "=== Running diagnostic_validation ==="
+        ls -lh diagnostic_validation
+        ldd diagnostic_validation || true
+        echo "=== Executing test ==="
+        ./diagnostic_validation 2>&1 | tee diagnostic_results.txt
         EXIT_CODE=${PIPESTATUS[0]}
         echo "Exit code: $EXIT_CODE"
         if [ $EXIT_CODE -ne 0 ]; then
@@ -68,19 +95,40 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: integration-test-results
-        path: drainability-profiler/examples/temporal-slab/results.txt
+        path: |
+          drainability-profiler/examples/temporal-slab/psweep_results.txt
+          drainability-profiler/examples/temporal-slab/diagnostic_results.txt
 
     - name: Check status
       run: |
         cd drainability-profiler/examples/temporal-slab
-        echo "=== Test Output ==="
-        cat results.txt
+        echo "=== P-Sweep Test Output ==="
+        cat psweep_results.txt
+        echo ""
+        echo "=== Diagnostic Test Output ==="
+        cat diagnostic_results.txt
         echo ""
         echo "=== Status Check ==="
-        if grep -q "VALIDATION SUCCESS" results.txt; then
-          echo "✓ Temporal-slab integration validated"
+        PSWEEP_PASS=0
+        DIAG_PASS=0
+        if grep -q "VALIDATION SUCCESS" psweep_results.txt; then
+          echo "✓ P-sweep validation passed"
+          PSWEEP_PASS=1
+        else
+          echo "✗ P-sweep validation failed"
+        fi
+        if grep -q "VALIDATION SUCCESS" diagnostic_results.txt; then
+          echo "✓ Diagnostic validation passed"
+          DIAG_PASS=1
+        else
+          echo "✗ Diagnostic validation failed"
+        fi
+        if [ $PSWEEP_PASS -eq 1 ] && [ $DIAG_PASS -eq 1 ]; then
+          echo ""
+          echo "✓ All temporal-slab integration tests passed"
           exit 0
         else
-          echo "✗ Integration test failed"
+          echo ""
+          echo "✗ Some integration tests failed"
           exit 1
         fi
