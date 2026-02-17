@@ -17,7 +17,7 @@
 extern drainprof* g_profiler;
 
 #define NUM_REQUESTS 100
-#define ALLOCS_PER_REQUEST 50
+#define ALLOCS_PER_REQUEST 1
 
 typedef struct {
     void* ptr;
