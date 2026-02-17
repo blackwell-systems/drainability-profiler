@@ -75,8 +75,8 @@ void run_workload(SlabAllocator* alloc, double p) {
     }
 
     printf("  Total leaks: %d / %d allocations (%.1f%%)\n",
-           total_leaked, NUM_REQUESTS * ALLOCS_PER_EPOCH,
-           100.0 * total_leaked / (NUM_REQUESTS * ALLOCS_PER_EPOCH));
+           total_leaked, NUM_REQUESTS * ALLOCS_PER_REQUEST,
+           100.0 * total_leaked / (NUM_REQUESTS * ALLOCS_PER_REQUEST));
 }
 
 int main() {
