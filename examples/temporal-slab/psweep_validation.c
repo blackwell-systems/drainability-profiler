@@ -88,6 +88,21 @@ void run_mixed_routing(SlabAllocator* alloc, double p) {
                 }
             }
 
+            /* Count how many violations should pin this epoch */
+            int expected_pins = 0;
+            for (int j = 0; j < alloc_count; j++) {
+                if (allocs[j].target_epoch == old_epoch &&
+                    allocs[j].intended_epoch != old_epoch &&
+                    allocs[j].ptr) {
+                    expected_pins++;
+                }
+            }
+
+            if (expected_pins > 0) {
+                printf("    Closing epoch %u with %d expected violations\n",
+                       old_epoch, expected_pins);
+            }
+
             /* Now close the epoch - violations should pin it */
             epoch_close(alloc, old_epoch);
         }
