@@ -41,6 +41,7 @@ typedef struct {
 void run_mixed_routing(SlabAllocator* alloc, double p) {
     Allocation allocs[NUM_EPOCHS * ALLOCS_PER_EPOCH];
     int alloc_count = 0;
+    int violation_count = 0;
 
     srand(42);  /* Deterministic seed */
 
@@ -71,6 +72,9 @@ void run_mixed_routing(SlabAllocator* alloc, double p) {
                 allocs[alloc_count].handle = handle;
                 allocs[alloc_count].target_epoch = target_epoch;
                 allocs[alloc_count].intended_epoch = current;
+                if (target_epoch != current) {
+                    violation_count++;
+                }
                 alloc_count++;
             }
         }
@@ -114,6 +118,9 @@ void run_mixed_routing(SlabAllocator* alloc, double p) {
             free_obj(alloc, allocs[i].handle);
         }
     }
+
+    printf("  Total violations created: %d (%.1f%%)\n",
+           violation_count, 100.0 * violation_count / alloc_count);
 }
 
 int main() {
