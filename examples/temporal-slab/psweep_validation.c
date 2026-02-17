@@ -33,7 +33,8 @@ extern drainprof* g_profiler;
 typedef struct {
     void* ptr;
     SlabHandle handle;
-    uint32_t epoch_id;
+    uint32_t target_epoch;    /* Where allocation was routed */
+    uint32_t intended_epoch;  /* Where it should have been routed */
 } Allocation;
 
 /* Mixed-routing workload: allocate objects, some routed to wrong epoch */
@@ -68,7 +69,8 @@ void run_mixed_routing(SlabAllocator* alloc, double p) {
             if (ptr) {
                 allocs[alloc_count].ptr = ptr;
                 allocs[alloc_count].handle = handle;
-                allocs[alloc_count].epoch_id = target_epoch;
+                allocs[alloc_count].target_epoch = target_epoch;
+                allocs[alloc_count].intended_epoch = current;
                 alloc_count++;
             }
         }
@@ -77,15 +79,16 @@ void run_mixed_routing(SlabAllocator* alloc, double p) {
         if (epoch_idx >= 8) {
             EpochId old_epoch = (current - 8 + 16) % 16;
 
-            /* Free all allocations from that epoch */
+            /* Free allocations that were INTENDED for this epoch.
+             * Allocations routed to wrong epoch remain live and pin. */
             for (int i = 0; i < alloc_count; i++) {
-                if (allocs[i].epoch_id == old_epoch && allocs[i].ptr) {
+                if (allocs[i].intended_epoch == old_epoch && allocs[i].ptr) {
                     free_obj(alloc, allocs[i].handle);
                     allocs[i].ptr = NULL;
                 }
             }
 
-            /* Now close the epoch */
+            /* Now close the epoch - violations should pin it */
             epoch_close(alloc, old_epoch);
         }
     }
