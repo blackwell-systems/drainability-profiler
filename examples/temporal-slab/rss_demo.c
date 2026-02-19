@@ -142,7 +142,15 @@ static void server_process_request(Server *srv, time_t now) {
     SlabHandle req_handle;
     void *req_buf = alloc_obj_epoch(srv->alloc, REQUEST_BUFFER_SIZE,
                                      request_epoch, &req_handle);
-    if (!req_buf) return;
+    if (!req_buf) {
+        static int err_count = 0;
+        if (err_count < 3) {
+            fprintf(stderr, "\nERROR: alloc_obj_epoch failed (epoch %u, size %d)\n",
+                    request_epoch, REQUEST_BUFFER_SIZE);
+            err_count++;
+        }
+        return;
+    }
 
     /* Simulate: 10% of requests create new sessions */
     int creates_session = (srv->total_requests % 10) == 0;
@@ -252,7 +260,7 @@ int main(int argc, char **argv) {
     /* Run workload */
     time_t start_time = time(NULL);
     int last_printed = -1;
-    int last_epoch_advance = 0;
+    int last_epoch_advance = -1;
 
     while (1) {
         time_t now = time(NULL);
@@ -260,16 +268,8 @@ int main(int argc, char **argv) {
 
         if (elapsed >= DURATION_SECONDS) break;
 
-        /* Timeout old sessions */
-        server_timeout_sessions(&srv, now);
-
-        /* Process requests */
-        for (int i = 0; i < REQUESTS_PER_SECOND / 10; i++) {
-            server_process_request(&srv, now);
-        }
-
-        /* Advance epoch every second */
-        if (elapsed > last_epoch_advance && elapsed > 0) {
+        /* Advance epoch every second (BEFORE processing requests for that epoch) */
+        if (elapsed > last_epoch_advance) {
             epoch_advance(srv.alloc);
 
             /* Close old epochs (simulate keeping last 5 seconds active) */
@@ -281,6 +281,14 @@ int main(int argc, char **argv) {
                 }
             }
             last_epoch_advance = elapsed;
+        }
+
+        /* Timeout old sessions */
+        server_timeout_sessions(&srv, now);
+
+        /* Process requests (allocate from current epoch) */
+        for (int i = 0; i < REQUESTS_PER_SECOND / 10; i++) {
+            server_process_request(&srv, now);
         }
 
         /* Print status every second */
