@@ -26,8 +26,8 @@
 
 #define DURATION_SECONDS 30
 #define REQUESTS_PER_SECOND 100
-#define REQUEST_BUFFER_SIZE 1024
-#define SESSION_SIZE 4096
+#define REQUEST_BUFFER_SIZE 128     /* Use small size like psweep */
+#define SESSION_SIZE 256           /* Use small size */
 #define SESSION_TIMEOUT_SECONDS 10  /* Sessions live for 10 seconds */
 #define MAX_SESSIONS 10000
 
