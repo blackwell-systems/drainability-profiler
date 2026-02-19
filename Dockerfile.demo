@@ -1,0 +1,42 @@
+FROM ubuntu:24.04
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Copy drainability-profiler
+COPY . /build/drainability-profiler/
+
+# Clone temporal-slab
+RUN git clone https://github.com/blackwell-systems/temporal-slab /build/temporal-slab
+
+# Build libdrainprof
+WORKDIR /build/drainability-profiler
+RUN make clean && make
+
+# Build temporal-slab with drainprof enabled
+WORKDIR /build/temporal-slab/src
+RUN make clean && \
+    make ENABLE_DRAINPROF=1 DRAINPROF_PATH=/build/drainability-profiler \
+         slab_lib.o epoch_domain.o slab_stats.o
+
+# Build rss_demo
+WORKDIR /build/drainability-profiler/examples/temporal-slab
+RUN gcc -O2 -std=c11 -pthread -Wall -Wextra -pedantic \
+    -I../../include -I/build/temporal-slab/include \
+    -DENABLE_RSS_RECLAMATION=1 -DENABLE_DRAINPROF \
+    rss_demo.c \
+    /build/temporal-slab/src/slab_lib.o \
+    /build/temporal-slab/src/epoch_domain.o \
+    /build/temporal-slab/src/slab_stats.o \
+    ../../libdrainprof.a \
+    -o rss_demo
+
+WORKDIR /build/drainability-profiler/examples/temporal-slab
+
+# Default: show help
+CMD ["./rss_demo"]

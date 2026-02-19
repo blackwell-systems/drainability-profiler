@@ -10,42 +10,49 @@ A lightweight C library for detecting structural memory leaks in coarse-grained 
 ```bash
 git clone https://github.com/blackwell-systems/drainability-profiler
 cd drainability-profiler
-make all && make test && make examples
 
-# Watch the structural leak in action (Linux only)
-./build/rss_demo --broken   # RSS climbs, DSR drops
-./build/rss_demo --fixed    # RSS flat, DSR high
+# Quick test (works everywhere)
+make all && make test
+
+# Watch the structural leak in action (Docker - Linux container)
+docker build -f Dockerfile.demo -t drainprof-demo .
+docker run --rm drainprof-demo ./rss_demo --broken   # RSS climbs, DSR drops
+docker run --rm drainprof-demo ./rss_demo --fixed    # RSS flat, DSR high
 ```
 
 **What you'll see:**
 - `--broken`: RSS grows 500MB+ over 30 seconds, DSR drops to ~10% (structural leak)
 - `--fixed`: RSS stays flat, DSR remains >95% (correct allocation)
+- **Both modes free every object** (Valgrind would report zero leaks)
+- Only `--broken` shows RSS growth because epochs are pinned
 
 You just detected structural memory leaks with <2ns overhead. See performance benchmarks and 15 passing tests.
 
 ### The Demo Explained
 
-The `rss_demo` simulates an HTTP server with epoch-based allocation:
+The `rss_demo` uses real temporal-slab allocation with session timeouts:
 
 **Broken Mode** (the bug):
 ```
-[30s] RSS: 512.3 MB (+487.2 MB) | Requests: 3000 | Sessions: 300 | DSR: 12.5% | Epochs: 5/40 drainable
+[30s] RSS: 512.3 MB (+487.2 MB) | Reqs: 3000 | Sessions: 150/300 | DSR: 12.5% | Epochs: 5/40 drainable
 ```
 - Sessions allocated in request epochs
-- When epoch closes, sessions still live → epoch pinned
-- RSS climbs unbounded (Ω(t) growth)
+- Sessions timeout after 10 seconds (all freed eventually)
+- **Valgrind reports zero leaks** (everything freed)
+- But epochs pinned until session timeout → RSS grows
 - DSR drops to ~10-15% (most epochs pinned)
 
 **Fixed Mode** (the solution):
 ```
-[30s] RSS: 52.1 MB (+27.0 MB) | Requests: 3000 | Sessions: 300 | DSR: 98.5% | Epochs: 39/40 drainable
+[30s] RSS: 52.1 MB (+27.0 MB) | Reqs: 3000 | Sessions: 150/300 | DSR: 98.5% | Epochs: 39/40 drainable
 ```
 - Sessions allocated in separate long-lived arena
-- Request epochs drain completely
-- RSS bounded (O(1) plateau)
+- Sessions timeout after 10 seconds (same as broken)
+- **Valgrind reports zero leaks** (everything freed)
+- Request epochs drainable immediately → RSS bounded
 - DSR stays >95% (epochs drainable)
 
-**The binary outcome:** Same allocator, same workload, only routing changed. Either O(1) or Ω(t) - no middle ground.
+**The binary outcome:** Same allocator, same workload, same lifetime management. Only routing changed. Either O(1) or Ω(t) - no middle ground.
 
 ## What is Drainability?
 
