@@ -14,18 +14,35 @@ cd drainability-profiler
 # Quick test (works everywhere)
 make all && make test
 
-# Watch the structural leak in action (Docker - Linux container)
+# Show what Valgrind misses (Docker - Linux container)
 docker build -f Dockerfile.demo -t drainprof-demo .
-docker run --rm drainprof-demo ./rss_demo --broken   # RSS climbs, DSR drops
-docker run --rm drainprof-demo ./rss_demo --fixed    # RSS flat, DSR high
+docker run --rm drainprof-demo ./compare.sh
 ```
 
 **What you'll see:**
-- `--broken`: **DSR drops to 5%** (only 1 of 20 epochs drainable), 19 epochs pinned by long-lived sessions
-- `--fixed`: **DSR stays at 90%** (18 of 20 epochs drainable), request epochs reclaim immediately
-- **Both modes free every object** (Valgrind would report zero leaks)
-- **Identical workload** (~285 sessions created), only allocation routing differs
-- libdrainprof detects the structural leak (5% vs 90%) **before** it becomes RSS growth
+```
+=========================================
+  VALGRIND SAYS:
+=========================================
+  All heap blocks were freed -- no leaks are possible
+
+=========================================
+  LIBDRAINPROF SAYS:
+=========================================
+Epochs closed:    20
+Drainable:        1 (5.0%)
+Pinned:           19
+
+Conclusion: Structural leak detected!
+```
+
+Same binary. **Valgrind: 0 bytes leaked**. **libdrainprof: 95% of epochs pinned**. This is what traditional leak detectors miss.
+
+**Or run modes individually:**
+```bash
+docker run --rm drainprof-demo ./rss_demo --broken   # DSR=5%
+docker run --rm drainprof-demo ./rss_demo --fixed    # DSR=90%
+```
 
 You just detected structural memory leaks with <2ns overhead. See performance benchmarks and 15 passing tests.
 

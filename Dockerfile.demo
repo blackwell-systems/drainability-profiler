@@ -4,6 +4,7 @@ FROM ubuntu:24.04
 RUN apt-get update && apt-get install -y \
     build-essential \
     git \
+    valgrind \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
@@ -24,9 +25,9 @@ RUN make clean && \
     make ENABLE_DRAINPROF=1 DRAINPROF_PATH=/build/drainability-profiler \
          slab_lib.o epoch_domain.o slab_stats.o
 
-# Build rss_demo
+# Build rss_demo (with debug symbols for Valgrind)
 WORKDIR /build/drainability-profiler/examples/temporal-slab
-RUN gcc -O2 -std=c11 -pthread -Wall -Wextra -pedantic \
+RUN gcc -O2 -g -std=c11 -pthread -Wall -Wextra -pedantic \
     -I../../include -I/build/temporal-slab/include \
     -DENABLE_RSS_RECLAMATION=1 -DENABLE_DRAINPROF \
     rss_demo.c \
@@ -35,6 +36,9 @@ RUN gcc -O2 -std=c11 -pthread -Wall -Wextra -pedantic \
     /build/temporal-slab/src/slab_stats.o \
     ../../libdrainprof.a \
     -o rss_demo
+
+# Make comparison script executable
+RUN chmod +x compare.sh
 
 WORKDIR /build/drainability-profiler/examples/temporal-slab
 
