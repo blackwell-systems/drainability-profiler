@@ -10,9 +10,16 @@ A lightweight C library for detecting structural memory leaks in coarse-grained 
 ```bash
 git clone https://github.com/blackwell-systems/drainability-profiler
 cd drainability-profiler
-make all && make test && make bench
-./build/basic  # Run example
+make all && make test && make examples
+
+# Watch the structural leak in action (Linux only)
+./build/rss_demo --broken   # RSS climbs, DSR drops
+./build/rss_demo --fixed    # RSS flat, DSR high
 ```
+
+**What you'll see:**
+- `--broken`: RSS grows 500MB+ over 30 seconds, DSR drops to ~10% (structural leak)
+- `--fixed`: RSS stays flat, DSR remains >95% (correct allocation)
 
 You just detected structural memory leaks with <2ns overhead. See performance benchmarks and 15 passing tests.
 
