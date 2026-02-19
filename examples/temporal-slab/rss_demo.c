@@ -80,7 +80,19 @@ static uint64_t get_rss_bytes(void) {
 
 /* Initialize server */
 static void server_init(Server *srv, int broken) {
+    /* Initialize profiler */
+    g_profiler = drainprof_create();
+    if (!g_profiler) {
+        fprintf(stderr, "ERROR: Failed to create profiler\n");
+        exit(1);
+    }
+
     srv->alloc = slab_allocator_create();
+    if (!srv->alloc) {
+        fprintf(stderr, "ERROR: Failed to create allocator\n");
+        exit(1);
+    }
+
     srv->broken_mode = broken;
     srv->next_session_slot = 0;
     srv->total_requests = 0;
@@ -332,5 +344,6 @@ int main(int argc, char **argv) {
     printf("\n");
 
     slab_allocator_free(srv.alloc);
+    drainprof_destroy(g_profiler);
     return 0;
 }
