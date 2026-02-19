@@ -56,6 +56,10 @@ Conclusion: Structural leak detected!
 
 Same binary. All objects freed. Valgrind clean. But 95% of epochs are pinned and non-drainable. **This is what traditional leak detectors miss.**
 
+**Full terminal outputs:** See complete 30-second runs with DSR progression in [`examples/temporal-slab/`](examples/temporal-slab/):
+- `output-broken.txt` / `output-broken-valgrind.txt` - Watch DSR drop from 100% → 5%
+- `output-fixed.txt` / `output-fixed-valgrind.txt` - Watch DSR stay at 90%
+
 ## Why This Matters
 
 Many allocators use coarse-grained reclamation (slabs, arenas, epochs) that can only return memory when completely empty. A single long-lived allocation pins the entire granule, even if 99% of objects are freed. Valgrind reports "no leaks" because objects are eventually freed, but the allocator can't reclaim memory until lifetimes align. In production, this manifests as RSS growth that takes days to appear and is invisible to traditional tools. libdrainprof detects it in CI with <2ns overhead.
@@ -80,6 +84,71 @@ printf("DSR: %.1f%%\n", snap.dsr * 100.0);  // 0-100%
 ```
 
 See [docs/API.md](docs/API.md) for full API reference and [docs/INTEGRATION.md](docs/INTEGRATION.md) for integration patterns.
+
+## Full Demo Output
+
+### Broken Mode (Structural Leak)
+
+Running `valgrind --leak-check=full ./rss_demo --broken`:
+
+**Valgrind's verdict:**
+```
+==1== HEAP SUMMARY:
+==1==     in use at exit: 0 bytes in 0 blocks
+==1==   total heap usage: 167 allocs, 167 frees, 166,480 bytes allocated
+==1==
+==1== All heap blocks were freed -- no leaks are possible
+==1==
+==1== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 0 from 0)
+```
+
+**libdrainprof's verdict (same run):**
+```
+=========================================
+  Final Results
+=========================================
+Requests:         2850
+Sessions created: 285
+Sessions freed:   285  ← All objects freed (Valgrind confirms)
+Active:           0
+
+Epochs closed:    20
+Drainable:        1 (5.0%)   ← Only 1 epoch can reclaim memory
+Pinned:           19          ← 19 epochs blocked by session lifetimes
+
+Conclusion: Structural leak detected!
+  - DSR = 5.0% (many epochs pinned by sessions)
+  - All objects freed (Valgrind would report zero leaks) ✓
+  - But epochs can't be reclaimed until sessions timeout
+```
+
+**What happened:** Sessions allocated in request epochs. All sessions freed after 60s (Valgrind sees 167 allocs/167 frees), but their lifetimes span multiple request epochs. Each session pins its epoch until timeout, even though request objects in that epoch were freed immediately. Result: 95% of epochs non-drainable.
+
+### Fixed Mode (No Leak)
+
+Running `valgrind --leak-check=full ./rss_demo --fixed`:
+
+**Valgrind's verdict:**
+```
+==1== All heap blocks were freed -- no leaks are possible
+```
+
+**libdrainprof's verdict:**
+```
+Requests:         2800
+Sessions created: 280
+Sessions freed:   280
+Epochs closed:    20
+Drainable:        18 (90.0%)  ← Request epochs reclaim immediately
+Pinned:           2             ← Only session allocator epochs
+
+Conclusion: No structural leak
+  - DSR = 90.0% (request epochs drainable)
+```
+
+**What changed:** Sessions moved to separate allocator with isolated lifetime. Request epochs now drain when requests complete, regardless of session state. Same Valgrind result (0 leaks), but DSR jumps from 5% → 90%.
+
+**The blind spot:** Valgrind reports "no leaks are possible" in **both modes** because it tracks object lifetime, not granule drainability. libdrainprof reveals the 18x difference.
 
 ## What is Drainability?
 
