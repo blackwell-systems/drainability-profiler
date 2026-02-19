@@ -105,20 +105,18 @@ static void server_init(Server *srv, int broken) {
         srv->sessions[i].active = 0;
     }
 
-    /* In fixed mode, create a separate long-lived arena for sessions */
-    if (!broken) {
-        /* Use a high epoch ID that won't conflict with request epochs */
-        srv->session_arena_id = 1000000;
-        /* Advance to this epoch (temporal-slab will manage it) */
-        while (epoch_current(srv->alloc) < srv->session_arena_id) {
-            epoch_advance(srv->alloc);
-        }
-    }
+    /* Advance to first epoch */
+    epoch_advance(srv->alloc);  /* Now at epoch 0 */
 
-    /* Start at epoch 0 for requests */
-    while (epoch_current(srv->alloc) > 0) {
-        /* Already at epoch 0 after init */
-        break;
+    if (!broken) {
+        /* Fixed mode: Use epoch 0 for sessions (never close it) */
+        srv->session_arena_id = 0;
+
+        /* Advance to epoch 1 for requests */
+        epoch_advance(srv->alloc);  /* Now at epoch 1, ready for requests */
+    } else {
+        /* Broken mode: sessions go in request epochs, no protected arena */
+        srv->session_arena_id = UINT64_MAX;  /* Invalid ID, won't match any real epoch */
     }
 }
 
