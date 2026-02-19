@@ -13,6 +13,7 @@
  *   ./rss_demo --fixed     # Watch RSS stay flat, DSR stay high
  */
 
+#define _GNU_SOURCE
 #include "../../../temporal-slab/include/slab_alloc.h"
 #include "../../../temporal-slab/include/epoch_domain.h"
 #include <drainprof.h>
@@ -79,8 +80,7 @@ static uint64_t get_rss_bytes(void) {
 
 /* Initialize server */
 static void server_init(Server *srv, int broken) {
-    srv->alloc = malloc(sizeof(SlabAllocator));
-    allocator_init(srv->alloc);
+    srv->alloc = slab_allocator_create();
     srv->broken_mode = broken;
     srv->next_session_slot = 0;
     srv->total_requests = 0;
@@ -331,7 +331,6 @@ int main(int argc, char **argv) {
     }
     printf("\n");
 
-    allocator_destroy(srv.alloc);
-    free(srv.alloc);
+    slab_allocator_free(srv.alloc);
     return 0;
 }
