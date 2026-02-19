@@ -1,0 +1,36 @@
+=========================================
+  libdrainprof RSS Demo
+=========================================
+Mode: BROKEN (structural leak)
+Duration: 30 seconds
+Workload: 100 requests/sec, 10% create sessions
+Session timeout: 60 seconds
+
+Problem: Sessions allocated in request epochs
+Result:  Epochs pinned until session timeout, RSS grows
+Note:    All objects ARE freed (Valgrind clean)
+
+Starting in 2 seconds...
+
+Running[ 0s] RSS:    1.9 MB (+  0.0 MB) | Reqs:    10 | Sessions:    1/   1 | DSR:   0.0% | Epochs:    0/   0 drainable   [ 1s] RSS:    1.9 MB (+  0.0 MB) | Reqs:    30 | Sessions:    3/   3 | DSR:   0.0% | Epochs:    0/   0 drainable   [ 2s] RSS:    1.9 MB (+  0.0 MB) | Reqs:   130 | Sessions:   13/  13 | DSR:   0.0% | Epochs:    0/   0 drainable   [ 3s] RSS:    1.9 MB (+  0.0 MB) | Reqs:   220 | Sessions:   22/  22 | DSR:   0.0% | Epochs:    0/   0 drainable   [ 4s] RSS:    1.9 MB (+  0.0 MB) | Reqs:   320 | Sessions:   32/  32 | DSR: 100.0% | Epochs:    1/   1 drainable   [ 5s] RSS:    1.9 MB (+  0.0 MB) | Reqs:   420 | Sessions:   42/  42 | DSR:  50.0% | Epochs:    1/   2 drainable   [ 6s] RSS:    1.9 MB (+  0.0 MB) | Reqs:   510 | Sessions:   51/  51 | DSR:  33.3% | Epochs:    1/   3 drainable   [ 7s] RSS:    2.0 MB (+  0.1 MB) | Reqs:   610 | Sessions:   61/  61 | DSR:  25.0% | Epochs:    1/   4 drainable   [ 8s] RSS:    2.0 MB (+  0.1 MB) | Reqs:   710 | Sessions:   71/  71 | DSR:  20.0% | Epochs:    1/   5 drainable   [ 9s] RSS:    2.0 MB (+  0.1 MB) | Reqs:   810 | Sessions:   81/  81 | DSR:  16.7% | Epochs:    1/   6 drainable   [10s] RSS:    2.0 MB (+  0.1 MB) | Reqs:   900 | Sessions:   90/  90 | DSR:  14.3% | Epochs:    1/   7 drainable   [11s] RSS:    2.0 MB (+  0.1 MB) | Reqs:  1000 | Sessions:  100/ 100 | DSR:  12.5% | Epochs:    1/   8 drainable   [12s] RSS:    2.0 MB (+  0.1 MB) | Reqs:  1100 | Sessions:  110/ 110 | DSR:  11.1% | Epochs:    1/   9 drainable   [13s] RSS:    2.0 MB (+  0.1 MB) | Reqs:  1190 | Sessions:  119/ 119 | DSR:  10.0% | Epochs:    1/  10 drainable   [14s] RSS:    2.0 MB (+  0.1 MB) | Reqs:  1290 | Sessions:  129/ 129 | DSR:  10.0% | Epochs:    1/  10 drainable   [15s] RSS:    2.0 MB (+  0.1 MB) | Reqs:  1380 | Sessions:  138/ 138 | DSR:  10.0% | Epochs:    1/  10 drainable   [16s] RSS:    2.0 MB (+  0.1 MB) | Reqs:  1480 | Sessions:  148/ 148 | DSR:  10.0% | Epochs:    1/  10 drainable   [17s] RSS:    2.0 MB (+  0.1 MB) | Reqs:  1580 | Sessions:  158/ 158 | DSR:  10.0% | Epochs:    1/  10 drainable   [18s] RSS:    2.0 MB (+  0.1 MB) | Reqs:  1680 | Sessions:  168/ 168 | DSR:  10.0% | Epochs:    1/  10 drainable   [19s] RSS:    2.0 MB (+  0.1 MB) | Reqs:  1770 | Sessions:  177/ 177 | DSR:  10.0% | Epochs:    1/  10 drainable   [20s] RSS:    2.0 MB (+  0.1 MB) | Reqs:  1870 | Sessions:  187/ 187 | DSR:   9.1% | Epochs:    1/  11 drainable   [21s] RSS:    2.0 MB (+  0.1 MB) | Reqs:  1970 | Sessions:  197/ 197 | DSR:   8.3% | Epochs:    1/  12 drainable   [22s] RSS:    2.0 MB (+  0.1 MB) | Reqs:  2060 | Sessions:  206/ 206 | DSR:   7.7% | Epochs:    1/  13 drainable   [23s] RSS:    2.0 MB (+  0.1 MB) | Reqs:  2160 | Sessions:  216/ 216 | DSR:   7.1% | Epochs:    1/  14 drainable   [24s] RSS:    2.0 MB (+  0.1 MB) | Reqs:  2260 | Sessions:  226/ 226 | DSR:   6.7% | Epochs:    1/  15 drainable   [25s] RSS:    2.0 MB (+  0.1 MB) | Reqs:  2350 | Sessions:  235/ 235 | DSR:   6.2% | Epochs:    1/  16 drainable   [26s] RSS:    2.0 MB (+  0.1 MB) | Reqs:  2450 | Sessions:  245/ 245 | DSR:   5.9% | Epochs:    1/  17 drainable   [27s] RSS:    2.0 MB (+  0.1 MB) | Reqs:  2550 | Sessions:  255/ 255 | DSR:   5.6% | Epochs:    1/  18 drainable   [28s] RSS:    2.0 MB (+  0.1 MB) | Reqs:  2640 | Sessions:  264/ 264 | DSR:   5.3% | Epochs:    1/  19 drainable   [29s] RSS:    2.0 MB (+  0.1 MB) | Reqs:  2740 | Sessions:  274/ 274 | DSR:   5.0% | Epochs:    1/  20 drainable   
+
+Cleaning up sessions...
+
+=========================================
+  Final Results
+=========================================
+RSS:              1.9 MB → 2.0 MB (+0.1 MB)
+Requests:         2830
+Sessions created: 283
+Sessions freed:   283
+Active:           0
+Epochs closed:    20
+Drainable:        1 (5.0%)
+Pinned:           19
+
+Conclusion: Structural leak detected!
+  - RSS grew 0.1 MB over 30 seconds
+  - DSR = 5.0% (many epochs pinned by sessions)
+  - All objects freed (Valgrind would report zero leaks)
+  - But epochs can't be reclaimed until sessions timeout
+

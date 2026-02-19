@@ -1,0 +1,50 @@
+==7== Memcheck, a memory error detector
+==7== Copyright (C) 2002-2022, and GNU GPL'd, by Julian Seward et al.
+==7== Using Valgrind-3.22.0 and LibVEX; rerun with -h for copyright info
+==7== Command: ./rss_demo --fixed
+==7== 
+=========================================
+  libdrainprof RSS Demo
+=========================================
+Mode: FIXED (correct allocation)
+Duration: 30 seconds
+Workload: 100 requests/sec, 10% create sessions
+Session timeout: 60 seconds
+
+Fix:     Sessions allocated in separate arena
+Result:  Request epochs drainable, RSS bounded
+Note:    All objects ARE freed (Valgrind clean)
+
+Starting in 2 seconds...
+
+Running[ 0s] RSS:   48.2 MB (+  0.2 MB) | Reqs:    10 | Sessions:    1/   1 | DSR:   0.0% | Epochs:    0/   0 drainable   [ 1s] RSS:   48.4 MB (+  0.4 MB) | Reqs:    50 | Sessions:    5/   5 | DSR:   0.0% | Epochs:    0/   0 drainable   [ 2s] RSS:   48.4 MB (+  0.4 MB) | Reqs:   150 | Sessions:   15/  15 | DSR:   0.0% | Epochs:    0/   0 drainable   [ 3s] RSS:   48.4 MB (+  0.4 MB) | Reqs:   250 | Sessions:   25/  25 | DSR:   0.0% | Epochs:    0/   1 drainable   [ 4s] RSS:   48.5 MB (+  0.5 MB) | Reqs:   340 | Sessions:   34/  34 | DSR:  50.0% | Epochs:    1/   2 drainable   [ 5s] RSS:   48.5 MB (+  0.5 MB) | Reqs:   440 | Sessions:   44/  44 | DSR:  66.7% | Epochs:    2/   3 drainable   [ 6s] RSS:   48.5 MB (+  0.5 MB) | Reqs:   530 | Sessions:   53/  53 | DSR:  75.0% | Epochs:    3/   4 drainable   [ 7s] RSS:   48.5 MB (+  0.5 MB) | Reqs:   630 | Sessions:   63/  63 | DSR:  80.0% | Epochs:    4/   5 drainable   [ 8s] RSS:   48.5 MB (+  0.5 MB) | Reqs:   730 | Sessions:   73/  73 | DSR:  83.3% | Epochs:    5/   6 drainable   [ 9s] RSS:   48.5 MB (+  0.5 MB) | Reqs:   820 | Sessions:   82/  82 | DSR:  85.7% | Epochs:    6/   7 drainable   [10s] RSS:   48.5 MB (+  0.5 MB) | Reqs:   920 | Sessions:   92/  92 | DSR:  87.5% | Epochs:    7/   8 drainable   [11s] RSS:   48.5 MB (+  0.5 MB) | Reqs:  1020 | Sessions:  102/ 102 | DSR:  88.9% | Epochs:    8/   9 drainable   [12s] RSS:   48.5 MB (+  0.5 MB) | Reqs:  1110 | Sessions:  111/ 111 | DSR:  90.0% | Epochs:    9/  10 drainable   [13s] RSS:   48.5 MB (+  0.5 MB) | Reqs:  1210 | Sessions:  121/ 121 | DSR:  90.0% | Epochs:    9/  10 drainable   [14s] RSS:   48.5 MB (+  0.5 MB) | Reqs:  1300 | Sessions:  130/ 130 | DSR:  90.0% | Epochs:    9/  10 drainable   [15s] RSS:   48.5 MB (+  0.5 MB) | Reqs:  1400 | Sessions:  140/ 140 | DSR:  90.0% | Epochs:    9/  10 drainable   [16s] RSS:   48.5 MB (+  0.5 MB) | Reqs:  1500 | Sessions:  150/ 150 | DSR:  90.0% | Epochs:    9/  10 drainable   [17s] RSS:   48.5 MB (+  0.5 MB) | Reqs:  1590 | Sessions:  159/ 159 | DSR:  90.0% | Epochs:    9/  10 drainable   [18s] RSS:   48.5 MB (+  0.5 MB) | Reqs:  1690 | Sessions:  169/ 169 | DSR:  90.0% | Epochs:    9/  10 drainable   [19s] RSS:   48.5 MB (+  0.5 MB) | Reqs:  1780 | Sessions:  178/ 178 | DSR:  81.8% | Epochs:    9/  11 drainable   [20s] RSS:   48.5 MB (+  0.5 MB) | Reqs:  1880 | Sessions:  188/ 188 | DSR:  83.3% | Epochs:   10/  12 drainable   [21s] RSS:   48.5 MB (+  0.5 MB) | Reqs:  1980 | Sessions:  198/ 198 | DSR:  84.6% | Epochs:   11/  13 drainable   [22s] RSS:   48.5 MB (+  0.5 MB) | Reqs:  2070 | Sessions:  207/ 207 | DSR:  85.7% | Epochs:   12/  14 drainable   [23s] RSS:   48.5 MB (+  0.5 MB) | Reqs:  2170 | Sessions:  217/ 217 | DSR:  86.7% | Epochs:   13/  15 drainable   [24s] RSS:   48.5 MB (+  0.5 MB) | Reqs:  2260 | Sessions:  226/ 226 | DSR:  87.5% | Epochs:   14/  16 drainable   [25s] RSS:   48.6 MB (+  0.6 MB) | Reqs:  2360 | Sessions:  236/ 236 | DSR:  88.2% | Epochs:   15/  17 drainable   [26s] RSS:   48.6 MB (+  0.6 MB) | Reqs:  2460 | Sessions:  246/ 246 | DSR:  88.9% | Epochs:   16/  18 drainable   [27s] RSS:   48.6 MB (+  0.6 MB) | Reqs:  2550 | Sessions:  255/ 255 | DSR:  89.5% | Epochs:   17/  19 drainable   [28s] RSS:   48.6 MB (+  0.6 MB) | Reqs:  2650 | Sessions:  265/ 265 | DSR:  90.0% | Epochs:   18/  20 drainable   [29s] RSS:   48.6 MB (+  0.6 MB) | Reqs:  2740 | Sessions:  274/ 274 | DSR:  90.0% | Epochs:   18/  20 drainable   
+
+Cleaning up sessions...
+
+=========================================
+  Final Results
+=========================================
+RSS:              48.0 MB → 48.6 MB (+0.6 MB)
+Requests:         2830
+Sessions created: 283
+Sessions freed:   283
+Active:           0
+Epochs closed:    20
+Drainable:        18 (90.0%)
+Pinned:           2
+
+Conclusion: No structural leak
+  - RSS grew only 0.6 MB (working set stable)
+  - DSR = 90.0% (request epochs drainable)
+  - All objects freed (Valgrind would report zero leaks)
+  - Sessions in separate arena, request epochs reclaim immediately
+
+==7== 
+==7== HEAP SUMMARY:
+==7==     in use at exit: 0 bytes in 0 blocks
+==7==   total heap usage: 186 allocs, 186 frees, 204,632 bytes allocated
+==7== 
+==7== All heap blocks were freed -- no leaks are possible
+==7== 
+==7== For lists of detected and suppressed errors, rerun with: -s
+==7== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 0 from 0)
