@@ -28,7 +28,7 @@
 #define REQUESTS_PER_SECOND 100
 #define REQUEST_BUFFER_SIZE 128     /* Use small size like psweep */
 #define SESSION_SIZE 256           /* Use small size */
-#define SESSION_TIMEOUT_SECONDS 10  /* Sessions live for 10 seconds */
+#define SESSION_TIMEOUT_SECONDS 60  /* Sessions outlive demo (show persistent pinning) */
 #define MAX_SESSIONS 10000
 
 extern drainprof* g_profiler;
@@ -37,6 +37,7 @@ extern drainprof* g_profiler;
 typedef struct {
     void* ptr;
     SlabHandle handle;
+    SlabAllocator* allocator;  /* Which allocator owns this session */
     time_t created;
     uint64_t epoch_id;  /* Which epoch it was allocated from */
     int active;
@@ -44,15 +45,13 @@ typedef struct {
 
 /* Server state */
 typedef struct {
-    SlabAllocator* alloc;
+    SlabAllocator* alloc;            /* Main allocator for requests */
+    SlabAllocator* session_alloc;    /* Separate allocator for sessions (fixed mode only) */
     int broken_mode;
 
     /* Session ring buffer */
     Session sessions[MAX_SESSIONS];
     int next_session_slot;
-
-    /* Separate arena for sessions (fixed mode only) */
-    EpochId session_arena_id;
 
     /* Counters */
     uint64_t total_requests;
@@ -109,14 +108,19 @@ static void server_init(Server *srv, int broken) {
     epoch_advance(srv->alloc);  /* Now at epoch 0 */
 
     if (!broken) {
-        /* Fixed mode: Use epoch 0 for sessions (never close it) */
-        srv->session_arena_id = 0;
+        /* Fixed mode: Create separate allocator for sessions (persistent arena) */
+        srv->session_alloc = slab_allocator_create();
+        if (!srv->session_alloc) {
+            fprintf(stderr, "ERROR: Failed to create session allocator\n");
+            exit(1);
+        }
+        epoch_advance(srv->session_alloc);  /* Sessions stay in epoch 0 */
 
-        /* Advance to epoch 1 for requests */
+        /* Advance main allocator to epoch 1 for requests */
         epoch_advance(srv->alloc);  /* Now at epoch 1, ready for requests */
     } else {
-        /* Broken mode: sessions go in request epochs, no protected arena */
-        srv->session_arena_id = UINT64_MAX;  /* Invalid ID, won't match any real epoch */
+        /* Broken mode: sessions use same allocator as requests */
+        srv->session_alloc = NULL;
     }
 }
 
@@ -125,8 +129,8 @@ static void server_timeout_sessions(Server *srv, time_t now) {
     for (int i = 0; i < MAX_SESSIONS; i++) {
         Session *s = &srv->sessions[i];
         if (s->active && (now - s->created >= SESSION_TIMEOUT_SECONDS)) {
-            /* Session timed out - free it */
-            free_obj(srv->alloc, s->handle);
+            /* Session timed out - free it from correct allocator */
+            free_obj(s->allocator, s->handle);
             s->active = 0;
             srv->total_sessions_freed++;
             srv->active_sessions--;
@@ -163,24 +167,29 @@ static void server_process_request(Server *srv, time_t now) {
         Session *session = &srv->sessions[slot];
         if (session->active) {
             /* Force free old session if slot occupied */
-            free_obj(srv->alloc, session->handle);
+            free_obj(session->allocator, session->handle);
             srv->total_sessions_freed++;
             srv->active_sessions--;
         }
 
-        /* Allocate session */
+        /* Allocate session from appropriate allocator */
+        SlabAllocator* session_allocator;
         EpochId session_epoch;
+
         if (srv->broken_mode) {
-            /* BUG: Allocate session from request epoch */
+            /* BUG: Allocate session from request epoch (mixed lifetime) */
+            session_allocator = srv->alloc;
             session_epoch = request_epoch;
         } else {
-            /* FIX: Allocate session from separate long-lived arena */
-            session_epoch = srv->session_arena_id;
+            /* FIX: Allocate session from separate persistent allocator */
+            session_allocator = srv->session_alloc;
+            session_epoch = epoch_current(srv->session_alloc);  /* Always epoch 0 */
         }
 
-        session->ptr = alloc_obj_epoch(srv->alloc, SESSION_SIZE,
+        session->ptr = alloc_obj_epoch(session_allocator, SESSION_SIZE,
                                        session_epoch, &session->handle);
         if (session->ptr) {
+            session->allocator = session_allocator;
             session->created = now;
             session->epoch_id = session_epoch;
             session->active = 1;
@@ -272,13 +281,11 @@ int main(int argc, char **argv) {
         if (elapsed > last_epoch_advance) {
             epoch_advance(srv.alloc);
 
-            /* Close old epochs (simulate keeping last 5 seconds active) */
+            /* Close old request epochs (simulate keeping last 5 seconds active) */
             EpochId current = epoch_current(srv.alloc);
             if (current > 5) {
                 EpochId old = current - 5;
-                if (old != srv.session_arena_id) {  /* Don't close session arena */
-                    epoch_close(srv.alloc, old);
-                }
+                epoch_close(srv.alloc, old);
             }
             last_epoch_advance = elapsed;
         }
@@ -301,11 +308,16 @@ int main(int argc, char **argv) {
         usleep(100000);  /* 100ms */
     }
 
+    /* Capture end state BEFORE cleanup (to show true structural leak state) */
+    uint64_t end_rss = get_rss_bytes();
+    drainprof_snapshot_t snap;
+    drainprof_snapshot(g_profiler, &snap);
+
     /* Clean up all remaining sessions */
     printf("\n\nCleaning up sessions...\n");
     for (int i = 0; i < MAX_SESSIONS; i++) {
         if (srv.sessions[i].active) {
-            free_obj(srv.alloc, srv.sessions[i].handle);
+            free_obj(srv.sessions[i].allocator, srv.sessions[i].handle);
             srv.total_sessions_freed++;
             srv.active_sessions--;
         }
@@ -316,13 +328,9 @@ int main(int argc, char **argv) {
     printf("  Final Results\n");
     printf("=========================================\n");
 
-    uint64_t end_rss = get_rss_bytes();
     double start_mb = start_rss / (1024.0 * 1024.0);
     double end_mb = end_rss / (1024.0 * 1024.0);
     double growth_mb = (end_rss - start_rss) / (1024.0 * 1024.0);
-
-    drainprof_snapshot_t snap;
-    drainprof_snapshot(g_profiler, &snap);
 
     printf("RSS:              %.1f MB → %.1f MB (+%.1f MB)\n", start_mb, end_mb, growth_mb);
     printf("Requests:         %lu\n", srv.total_requests);
@@ -349,6 +357,10 @@ int main(int argc, char **argv) {
     }
     printf("\n");
 
+    /* Destroy allocators */
+    if (srv.session_alloc) {
+        slab_allocator_free(srv.session_alloc);
+    }
     slab_allocator_free(srv.alloc);
     drainprof_destroy(g_profiler);
     return 0;
