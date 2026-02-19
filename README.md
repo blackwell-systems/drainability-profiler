@@ -23,6 +23,30 @@ make all && make test && make examples
 
 You just detected structural memory leaks with <2ns overhead. See performance benchmarks and 15 passing tests.
 
+### The Demo Explained
+
+The `rss_demo` simulates an HTTP server with epoch-based allocation:
+
+**Broken Mode** (the bug):
+```
+[30s] RSS: 512.3 MB (+487.2 MB) | Requests: 3000 | Sessions: 300 | DSR: 12.5% | Epochs: 5/40 drainable
+```
+- Sessions allocated in request epochs
+- When epoch closes, sessions still live → epoch pinned
+- RSS climbs unbounded (Ω(t) growth)
+- DSR drops to ~10-15% (most epochs pinned)
+
+**Fixed Mode** (the solution):
+```
+[30s] RSS: 52.1 MB (+27.0 MB) | Requests: 3000 | Sessions: 300 | DSR: 98.5% | Epochs: 39/40 drainable
+```
+- Sessions allocated in separate long-lived arena
+- Request epochs drain completely
+- RSS bounded (O(1) plateau)
+- DSR stays >95% (epochs drainable)
+
+**The binary outcome:** Same allocator, same workload, only routing changed. Either O(1) or Ω(t) - no middle ground.
+
 ## What is Drainability?
 
 **Drainability** is a structural property of memory allocators that determines whether allocated granules (slabs, arenas, epochs, regions) can be reclaimed at their natural reclaim boundaries, even when all individual objects have been freed.
