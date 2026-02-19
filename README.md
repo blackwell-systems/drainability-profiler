@@ -46,31 +46,58 @@ docker run --rm drainprof-demo ./rss_demo --fixed    # DSR=90%
 
 You just detected structural memory leaks with <2ns overhead. See performance benchmarks and 15 passing tests.
 
-### The Demo Explained
+### What the Demo Shows
 
-The `rss_demo` uses real temporal-slab allocation with session timeouts:
+Running `./compare.sh` (or `valgrind ./rss_demo --broken`) shows Valgrind and libdrainprof analyzing the **same binary**:
 
-**Broken Mode** (the bug):
+#### Valgrind's Analysis (Broken Mode)
 ```
-[29s] RSS: 2.0 MB (+0.1 MB) | Reqs: 2800 | Sessions: 280/280 | DSR: 5.0% | Epochs: 1/20 drainable
+==1== HEAP SUMMARY:
+==1==     in use at exit: 0 bytes in 0 blocks
+==1==   total heap usage: 167 allocs, 167 frees, 166,480 bytes allocated
+==1==
+==1== All heap blocks were freed -- no leaks are possible
 ```
-- Sessions allocated in request epochs (mixed lifetimes)
-- Sessions timeout after 60 seconds (outlive the demo)
-- **Valgrind reports zero leaks** (all objects freed)
-- But epochs pinned until session timeout → 95% of epochs non-drainable
-- DSR: **5.0%** (only 1 of 20 epochs drainable)
 
-**Fixed Mode** (the solution):
+#### libdrainprof's Analysis (Same Run)
 ```
-[29s] RSS: 2.0 MB (+0.1 MB) | Reqs: 2800 | Sessions: 287/287 | DSR: 90.0% | Epochs: 18/20 drainable
-```
-- Sessions allocated in separate persistent allocator (isolated lifetimes)
-- Sessions timeout after 60 seconds (same as broken)
-- **Valgrind reports zero leaks** (all objects freed)
-- Request epochs drainable immediately → structural health maintained
-- DSR: **90.0%** (18 of 20 request epochs drainable)
+=========================================
+  Final Results
+=========================================
+Requests:         2850
+Sessions created: 285
+Sessions freed:   285  ← All objects freed (Valgrind confirms)
+Active:           0
 
-**The binary outcome:** Identical workload (~285 sessions), same Valgrind result (zero leaks). Only session routing changed. DSR reveals the structural leak: **5% vs 90%** - an 18x difference that RSS monitoring and traditional leak detectors completely miss.
+Epochs closed:    20
+Drainable:        1 (5.0%)   ← Only 1 epoch can reclaim memory
+Pinned:           19          ← 19 epochs blocked by session lifetimes
+
+Conclusion: Structural leak detected!
+  - DSR = 5.0% (many epochs pinned by sessions)
+  - All objects freed (Valgrind would report zero leaks) ✓
+  - But epochs can't be reclaimed until sessions timeout
+```
+
+**What happened:** Sessions were allocated in request epochs. All sessions are freed after 60s (Valgrind sees 167 allocs/167 frees), but their lifetimes span multiple request epochs. Each session pins its epoch until timeout, even though the request objects in that epoch were freed immediately. Result: 95% of epochs non-drainable.
+
+#### Fixed Mode (90% DSR)
+```
+==1== All heap blocks were freed -- no leaks are possible
+
+Requests:         2800
+Sessions created: 280
+Sessions freed:   280
+Epochs closed:    20
+Drainable:        18 (90.0%)  ← Request epochs reclaim immediately
+Pinned:           2             ← Only session allocator epochs
+
+Conclusion: No structural leak
+```
+
+**What changed:** Sessions moved to separate allocator with isolated lifetime. Request epochs now drain when requests complete, regardless of session state. Same Valgrind result (0 leaks), but DSR jumps from 5% → 90%.
+
+**The blind spot:** Valgrind reports "no leaks are possible" in **both modes** because it tracks object lifetime, not granule drainability. libdrainprof reveals the 18x difference.
 
 ## What is Drainability?
 
