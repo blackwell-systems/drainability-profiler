@@ -5,6 +5,17 @@
 
 A lightweight C library for detecting structural memory leaks in coarse-grained allocators by measuring drainability at runtime. Helps you answer: **"Why does my service leak memory when Valgrind says it doesn't?"**
 
+## Try It in 60 Seconds
+
+```bash
+git clone https://github.com/blackwell-systems/drainability-profiler
+cd drainability-profiler
+make all && make test && make bench
+./build/basic  # Run example
+```
+
+You just detected structural memory leaks with <2ns overhead. See performance benchmarks and 15 passing tests.
+
 ## What is Drainability?
 
 **Drainability** is a structural property of memory allocators that determines whether allocated granules (slabs, arenas, epochs, regions) can be reclaimed at their natural reclaim boundaries, even when all individual objects have been freed.
