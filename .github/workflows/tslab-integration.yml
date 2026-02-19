@@ -90,6 +90,89 @@ jobs:
           echo "Test crashed or failed with exit code $EXIT_CODE"
         fi
 
+    - name: Build rss_demo
+      run: |
+        cd drainability-profiler/examples/temporal-slab
+        gcc -O2 -g -std=c11 -pthread -Wall -Wextra -pedantic \
+          -I../../include -I../../../temporal-slab/include \
+          -DENABLE_RSS_RECLAMATION=1 -DENABLE_DRAINPROF \
+          rss_demo.c \
+          ../../../temporal-slab/src/slab_lib.o \
+          ../../../temporal-slab/src/epoch_domain.o \
+          ../../../temporal-slab/src/slab_stats.o \
+          ../../libdrainprof.a \
+          -o rss_demo
+
+    - name: Install Valgrind
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y valgrind
+
+    - name: Run rss_demo (broken mode with Valgrind)
+      run: |
+        cd drainability-profiler/examples/temporal-slab
+        echo "=== Running broken mode with Valgrind ==="
+        valgrind --leak-check=full --show-leak-kinds=all ./rss_demo --broken 2>&1 | tee rss_broken_valgrind.txt
+        EXIT_CODE=${PIPESTATUS[0]}
+        echo "Exit code: $EXIT_CODE"
+
+    - name: Run rss_demo (fixed mode with Valgrind)
+      run: |
+        cd drainability-profiler/examples/temporal-slab
+        echo "=== Running fixed mode with Valgrind ==="
+        valgrind --leak-check=full --show-leak-kinds=all ./rss_demo --fixed 2>&1 | tee rss_fixed_valgrind.txt
+        EXIT_CODE=${PIPESTATUS[0]}
+        echo "Exit code: $EXIT_CODE"
+
+    - name: Validate DSR thresholds
+      run: |
+        cd drainability-profiler/examples/temporal-slab
+        echo "=== Validating DSR thresholds ==="
+
+        # Extract DSR from broken mode
+        BROKEN_DSR=$(grep "Drainable:" rss_broken_valgrind.txt | tail -1 | sed 's/.*(\(.*\)%).*/\1/')
+        echo "Broken mode DSR: ${BROKEN_DSR}%"
+
+        # Extract DSR from fixed mode
+        FIXED_DSR=$(grep "Drainable:" rss_fixed_valgrind.txt | tail -1 | sed 's/.*(\(.*\)%).*/\1/')
+        echo "Fixed mode DSR: ${FIXED_DSR}%"
+
+        # Validate thresholds
+        BROKEN_PASS=0
+        FIXED_PASS=0
+
+        if (( $(echo "$BROKEN_DSR < 15.0" | bc -l) )); then
+          echo "✓ Broken mode DSR < 15% (structural leak detected)"
+          BROKEN_PASS=1
+        else
+          echo "✗ Broken mode DSR = ${BROKEN_DSR}% (expected < 15%)"
+        fi
+
+        if (( $(echo "$FIXED_DSR > 85.0" | bc -l) )); then
+          echo "✓ Fixed mode DSR > 85% (no structural leak)"
+          FIXED_PASS=1
+        else
+          echo "✗ Fixed mode DSR = ${FIXED_DSR}% (expected > 85%)"
+        fi
+
+        # Verify Valgrind found no leaks in both modes
+        if grep -q "All heap blocks were freed -- no leaks are possible" rss_broken_valgrind.txt && \
+           grep -q "All heap blocks were freed -- no leaks are possible" rss_fixed_valgrind.txt; then
+          echo "✓ Valgrind reports 0 leaks in both modes"
+        else
+          echo "✗ Valgrind found leaks"
+          exit 1
+        fi
+
+        if [ $BROKEN_PASS -eq 1 ] && [ $FIXED_PASS -eq 1 ]; then
+          echo ""
+          echo "✓ RSS demo DSR thresholds passed"
+        else
+          echo ""
+          echo "✗ RSS demo DSR thresholds failed"
+          exit 1
+        fi
+
     - name: Upload results
       if: always()
       uses: actions/upload-artifact@v4
@@ -98,6 +181,8 @@ jobs:
         path: |
           drainability-profiler/examples/temporal-slab/psweep_results.txt
           drainability-profiler/examples/temporal-slab/diagnostic_results.txt
+          drainability-profiler/examples/temporal-slab/rss_broken_valgrind.txt
+          drainability-profiler/examples/temporal-slab/rss_fixed_valgrind.txt
 
     - name: Check status
       run: |
@@ -123,6 +208,10 @@ jobs:
         else
           echo "✗ Diagnostic validation failed"
         fi
+
+        # RSS demo already validated in separate step
+        echo "✓ RSS demo DSR thresholds passed (validated above)"
+
         if [ $PSWEEP_PASS -eq 1 ] && [ $DIAG_PASS -eq 1 ]; then
           echo ""
           echo "✓ All temporal-slab integration tests passed"
