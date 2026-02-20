@@ -10,6 +10,57 @@
 #include <string.h>
 
 /* ========================================================================== */
+/*  Hash Function for Granule IDs                                             */
+/* ========================================================================== */
+
+/* MurmurHash3 finalizer - distributes bits evenly for page-aligned addresses.
+ * Critical for slot arrays where slab addresses have many trailing zeros. */
+static inline uint32_t hash_granule_id(uint64_t id) {
+    id ^= id >> 33;
+    id *= 0xff51afd7ed558ccdULL;
+    id ^= id >> 33;
+    id *= 0xc4ceb9fe1a85ec53ULL;
+    id ^= id >> 33;
+    return (uint32_t)id;
+}
+
+/* ========================================================================== */
+/*  Slot Lookup with Linear Probing                                           */
+/* ========================================================================== */
+
+/* Find the slot containing the given granule ID.
+ * Returns slot pointer on success, NULL if not found. */
+static inline drainprof_granule_slot *find_slot(
+    drainprof_slot_array *arr,
+    drainprof_granule_id id
+) {
+    uint32_t hash = hash_granule_id(id);
+    uint32_t slot_idx = hash % arr->capacity;
+
+    /* Linear probe to find the granule */
+    for (uint32_t probe = 0; probe < arr->capacity; probe++) {
+        uint32_t idx = (slot_idx + probe) % arr->capacity;
+        drainprof_granule_slot *slot = &arr->slots[idx];
+
+        uint32_t occupied = atomic_load(&slot->occupied);
+        if (!occupied) {
+            /* Hit an empty slot - granule not found */
+            return NULL;
+        }
+
+        uint64_t stored_id = atomic_load(&slot->granule_id);
+        if (stored_id == id) {
+            /* Found it */
+            return slot;
+        }
+        /* Wrong granule - continue probing */
+    }
+
+    /* Searched entire array - not found */
+    return NULL;
+}
+
+/* ========================================================================== */
 /*  Slot Array Creation/Destruction                                           */
 /* ========================================================================== */
 
@@ -57,36 +108,48 @@ int drainprof_slot_array_open(
     drainprof_slot_array *arr,
     drainprof_granule_id id
 ) {
-    uint32_t slot_idx = (uint32_t)(id % arr->capacity);
-    drainprof_granule_slot *slot = &arr->slots[slot_idx];
+    uint32_t hash = hash_granule_id(id);
+    uint32_t slot_idx = hash % arr->capacity;
 
-    /* Try to claim the slot using CAS on occupied flag */
-    uint32_t expected = 0;
-    if (!atomic_compare_exchange_strong(&slot->occupied, &expected, 1)) {
-        /* Slot is occupied by another granule - collision */
-        return -1;
+    /* Linear probing: try up to capacity slots to find an empty one */
+    for (uint32_t probe = 0; probe < arr->capacity; probe++) {
+        uint32_t idx = (slot_idx + probe) % arr->capacity;
+        drainprof_granule_slot *slot = &arr->slots[idx];
+
+        /* Check if this slot already holds our granule (idempotent open) */
+        uint32_t occupied = atomic_load(&slot->occupied);
+        if (occupied) {
+            uint64_t stored_id = atomic_load(&slot->granule_id);
+            if (stored_id == id) {
+                /* Granule already registered - idempotent success */
+                return 0;
+            }
+            /* Slot occupied by different granule - continue probing */
+            continue;
+        }
+
+        /* Try to claim this empty slot using CAS on occupied flag */
+        uint32_t expected = 0;
+        if (atomic_compare_exchange_strong(&slot->occupied, &expected, 1)) {
+            /* We own the slot now. Initialize it. */
+            atomic_store(&slot->granule_id, id);
+            atomic_store(&slot->live_count, 0);
+            return 0;
+        }
+        /* CAS failed - another thread claimed it. Continue probing. */
     }
 
-    /* We own the slot now. Initialize it. */
-    atomic_store(&slot->granule_id, id);
-    atomic_store(&slot->live_count, 0);
-
-    return 0;
+    /* Slot array is full */
+    return -1;
 }
 
 uint32_t drainprof_slot_array_close(
     drainprof_slot_array *arr,
     drainprof_granule_id id
 ) {
-    uint32_t slot_idx = (uint32_t)(id % arr->capacity);
-    drainprof_granule_slot *slot = &arr->slots[slot_idx];
-
-    /* Verify this slot belongs to the requested granule */
-    uint64_t stored_id = atomic_load(&slot->granule_id);
-    uint32_t occupied = atomic_load(&slot->occupied);
-
-    if (!occupied || stored_id != id) {
-        /* Granule not found in expected slot */
+    drainprof_granule_slot *slot = find_slot(arr, id);
+    if (!slot) {
+        /* Granule not found */
         return UINT32_MAX;
     }
 
@@ -125,17 +188,10 @@ int drainprof_slot_array_alloc(
     drainprof_slot_array *arr,
     drainprof_granule_id id
 ) {
-    uint32_t slot_idx = (uint32_t)(id % arr->capacity);
-    drainprof_granule_slot *slot = &arr->slots[slot_idx];
-
-    /* Verify slot ownership (optional in production, helps catch bugs) */
-#ifndef NDEBUG
-    uint64_t stored_id = atomic_load(&slot->granule_id);
-    uint32_t occupied = atomic_load(&slot->occupied);
-    if (!occupied || stored_id != id) {
-        return -1;  /* Granule not in expected slot */
+    drainprof_granule_slot *slot = find_slot(arr, id);
+    if (!slot) {
+        return -1;  /* Granule not found */
     }
-#endif
 
     /* HOT PATH: Single atomic increment, no locks */
     atomic_fetch_add(&slot->live_count, 1);
@@ -146,17 +202,10 @@ int drainprof_slot_array_dealloc(
     drainprof_slot_array *arr,
     drainprof_granule_id id
 ) {
-    uint32_t slot_idx = (uint32_t)(id % arr->capacity);
-    drainprof_granule_slot *slot = &arr->slots[slot_idx];
-
-    /* Verify slot ownership (debug only) */
-#ifndef NDEBUG
-    uint64_t stored_id = atomic_load(&slot->granule_id);
-    uint32_t occupied = atomic_load(&slot->occupied);
-    if (!occupied || stored_id != id) {
-        return -1;
+    drainprof_granule_slot *slot = find_slot(arr, id);
+    if (!slot) {
+        return -1;  /* Granule not found */
     }
-#endif
 
     /* HOT PATH: Single atomic decrement, no locks */
     atomic_fetch_sub(&slot->live_count, 1);

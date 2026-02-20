@@ -452,6 +452,68 @@ void drainprof_snapshot(const drainprof *prof, drainprof_snapshot_t *out) {
         : 0.0;
 }
 
+void drainprof_sweep(drainprof *prof, drainprof_snapshot_t *out) {
+    if (!prof || !out) {
+        return;
+    }
+
+    /* Capture timestamp */
+    clock_gettime(CLOCK_MONOTONIC, &out->timestamp);
+
+    /* Read persistent counters */
+    out->open_granules = atomic_load(&prof->counters.open_granules);
+    out->peak_open_granules = atomic_load(&prof->counters.peak_open_granules);
+    out->total_allocs = atomic_load(&prof->counters.total_allocs);
+    out->total_deallocs = atomic_load(&prof->counters.total_deallocs);
+
+    /* Sweep: count drainable vs pinned granules */
+    uint64_t drainable_count = 0;
+    uint64_t pinned_count = 0;
+
+    if (prof->config.mode == DRAINPROF_PRODUCTION) {
+        if (prof->config.storage == DRAINPROF_SLOT_ARRAY) {
+            drainprof_slot_array *arr = prof->storage.slot_array;
+            for (uint32_t i = 0; i < arr->capacity; i++) {
+                uint32_t occupied = atomic_load(&arr->slots[i].occupied);
+                if (occupied) {
+                    uint32_t live_count = atomic_load(&arr->slots[i].live_count);
+                    if (live_count == 0) {
+                        drainable_count++;
+                    } else {
+                        pinned_count++;
+                    }
+                }
+            }
+        }
+    } else {
+        /* Diagnostic mode */
+        if (prof->config.storage == DRAINPROF_SLOT_ARRAY) {
+            drainprof_slot_array_diag *arr = prof->storage.slot_array_diag;
+            for (uint32_t i = 0; i < arr->capacity; i++) {
+                uint32_t occupied = atomic_load(&arr->slots[i].occupied);
+                if (occupied && arr->slots[i].diag) {
+                    uint32_t live_count = atomic_load(&arr->slots[i].diag->live_count);
+                    if (live_count == 0) {
+                        drainable_count++;
+                    } else {
+                        pinned_count++;
+                    }
+                }
+            }
+        }
+    }
+
+    /* Fill snapshot with sweep results */
+    out->total_closes = drainable_count + pinned_count;
+    out->drainable_closes = drainable_count;
+    out->pinned_closes = pinned_count;
+
+    /* Calculate DSR */
+    out->dsr = out->total_closes > 0
+        ? (double)out->drainable_closes / (double)out->total_closes
+        : 0.0;
+}
+
 void drainprof_reset(drainprof *prof) {
     if (!prof) {
         return;

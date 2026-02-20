@@ -295,6 +295,21 @@ void drainprof_snapshot(const drainprof *prof, drainprof_snapshot_t *out);
 /** Reset all counters and clear all state. */
 void drainprof_reset(drainprof *prof);
 
+/** Sweep all currently-open granules and compute instantaneous drainability.
+ *  For cache-based allocators where granules don't have explicit close events.
+ *  Walks all open granules and counts:
+ *  - Drainable: granules with zero live allocations
+ *  - Pinned: granules with one or more live allocations
+ *
+ *  The snapshot's total_closes, drainable_closes, and pinned_closes reflect
+ *  the instantaneous state, NOT cumulative lifetime statistics.
+ *
+ *  Production mode (slot array): O(capacity), lock-free atomic reads.
+ *  Diagnostic mode: O(capacity), read locks per occupied slot.
+ *
+ *  Snapshot is written to *out. */
+void drainprof_sweep(drainprof *prof, drainprof_snapshot_t *out);
+
 /* ========================================================================== */
 /*  Diagnostic Mode Queries                                                   */
 /* ========================================================================== */
