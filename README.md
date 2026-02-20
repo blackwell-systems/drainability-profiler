@@ -85,71 +85,6 @@ printf("DSR: %.1f%%\n", snap.dsr * 100.0);  // 0-100%
 
 See [docs/API.md](docs/API.md) for full API reference and [docs/INTEGRATION.md](docs/INTEGRATION.md) for integration patterns.
 
-## Full Demo Output
-
-### Broken Mode (Structural Leak)
-
-Running `valgrind --leak-check=full ./rss_demo --broken`:
-
-**Valgrind's verdict:**
-```
-==1== HEAP SUMMARY:
-==1==     in use at exit: 0 bytes in 0 blocks
-==1==   total heap usage: 167 allocs, 167 frees, 166,480 bytes allocated
-==1==
-==1== All heap blocks were freed -- no leaks are possible
-==1==
-==1== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 0 from 0)
-```
-
-**libdrainprof's verdict (same run):**
-```
-=========================================
-  Final Results
-=========================================
-Requests:         2850
-Sessions created: 285
-Sessions freed:   285  ← All objects freed (Valgrind confirms)
-Active:           0
-
-Epochs closed:    20
-Drainable:        1 (5.0%)   ← Only 1 epoch can reclaim memory
-Pinned:           19          ← 19 epochs blocked by session lifetimes
-
-Conclusion: Structural leak detected!
-  - DSR = 5.0% (many epochs pinned by sessions)
-  - All objects freed (Valgrind would report zero leaks) ✓
-  - But epochs can't be reclaimed until sessions timeout
-```
-
-**What happened:** Sessions allocated in request epochs. All sessions freed after 60s (Valgrind sees 167 allocs/167 frees), but their lifetimes span multiple request epochs. Each session pins its epoch until timeout, even though request objects in that epoch were freed immediately. Result: 95% of epochs non-drainable.
-
-### Fixed Mode (No Leak)
-
-Running `valgrind --leak-check=full ./rss_demo --fixed`:
-
-**Valgrind's verdict:**
-```
-==1== All heap blocks were freed -- no leaks are possible
-```
-
-**libdrainprof's verdict:**
-```
-Requests:         2800
-Sessions created: 280
-Sessions freed:   280
-Epochs closed:    20
-Drainable:        18 (90.0%)  ← Request epochs reclaim immediately
-Pinned:           2             ← Only session allocator epochs
-
-Conclusion: No structural leak
-  - DSR = 90.0% (request epochs drainable)
-```
-
-**What changed:** Sessions moved to separate allocator with isolated lifetime. Request epochs now drain when requests complete, regardless of session state. Same Valgrind result (0 leaks), but DSR jumps from 5% → 90%.
-
-**The blind spot:** Valgrind reports "no leaks are possible" in **both modes** because it tracks object lifetime, not granule drainability. libdrainprof reveals the 18x difference.
-
 ## What is Drainability?
 
 **Drainability** measures whether allocator granules (slabs/arenas/epochs) can reclaim memory at their natural boundaries. A structural leak occurs when all individual objects are freed (Valgrind clean), but granules remain pinned by lifetime mismatches. **DSR = drainable_closes / total_closes** quantifies this: 100% means perfect, <50% indicates severe structural leaks.
@@ -162,6 +97,10 @@ Full explanation: [Research paper](https://doi.org/10.5281/zenodo.18653776)
 - **Thread-safe:** Lock-free atomic operations
 - **Two modes:** Production (always-on metrics) and Diagnostic (per-allocation tracking with source locations)
 - **Real integration:** Works with [temporal-slab allocator](https://github.com/blackwell-systems/temporal-slab), validated in CI
+
+## Real-World Validation
+
+**Redis 7.2 + jemalloc instrumentation:** Demonstrated structural fragmentation on production workload. After populating 100K keys and deleting 50% (freeing 195K objects), **0% of slabs became reclaimable** — all 256 slabs remained pinned by scattered surviving allocations. See [`examples/redis/`](examples/redis/) for patches and reproduction steps, or clone the [instrumented fork](https://github.com/blackwell-systems/redis-drainprof).
 
 ## Installation
 
