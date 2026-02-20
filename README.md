@@ -3,6 +3,8 @@
 [![Blackwell Systems™](https://raw.githubusercontent.com/blackwell-systems/blackwell-docs-theme/main/badge-trademark.svg)](https://github.com/blackwell-systems)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.18653776.svg)](https://doi.org/10.5281/zenodo.18653776)
 
+**Part of the [Drainability Project](https://github.com/blackwell-systems/drainability)** – Theory, measurement tools, and validation for structural memory leaks
+
 A lightweight C library for detecting structural memory leaks in coarse-grained allocators by measuring drainability at runtime. Helps you answer: **"Why does my service leak memory when Valgrind says it doesn't?"**
 
 ## Try It in 60 Seconds
