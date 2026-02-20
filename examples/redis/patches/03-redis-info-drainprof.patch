@@ -1,0 +1,47 @@
+diff --git a/src/server.c b/src/server.c
+index 1234567..abcdefg 100644
+--- a/src/server.c
++++ b/src/server.c
+@@ -80,6 +80,12 @@
+ #include <dlfcn.h>
+ #endif
+
++#ifdef ENABLE_DRAINPROF
++/* jemalloc drainprof API (defined in jemalloc/jemalloc.h) */
++extern double jemalloc_get_drainprof_dsr(void);
++extern void jemalloc_get_drainprof_stats(uint64_t *total, uint64_t *drainable, uint64_t *pinned);
++#endif
++
+ /******************************************************************************/
+ /* Globals */
+ /******************************************************************************/
+@@ -5588,6 +5594,29 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
+             server.stat_total_frees,
+             mem_info->zmalloc_used);
+
++#ifdef ENABLE_DRAINPROF
++        /* libdrainprof drainability metrics */
++        double dsr = jemalloc_get_drainprof_dsr();
++        uint64_t total_closes = 0, drainable_closes = 0, pinned_closes = 0;
++        jemalloc_get_drainprof_stats(&total_closes, &drainable_closes, &pinned_closes);
++
++        if (dsr >= 0.0) {
++            info = sdscatprintf(info,
++                "mem_drainability_ratio:%.4f\r\n"
++                "mem_drainprof_enabled:yes\r\n"
++                "mem_drainprof_total_extent_closes:%llu\r\n"
++                "mem_drainprof_drainable_closes:%llu\r\n"
++                "mem_drainprof_pinned_closes:%llu\r\n",
++                dsr,
++                (unsigned long long)total_closes,
++                (unsigned long long)drainable_closes,
++                (unsigned long long)pinned_closes);
++        } else {
++            info = sdscatprintf(info,
++                "mem_drainprof_enabled:no\r\n");
++        }
++#endif
++
+         if (mem_info->lazyfree_pending_objects)
+             info = sdscatprintf(info,
+                 "lazyfree_pending_objects:%zu\r\n",

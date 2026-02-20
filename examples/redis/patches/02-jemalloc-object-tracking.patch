@@ -1,0 +1,123 @@
+diff --git a/deps/jemalloc/src/arena.c b/deps/jemalloc/src/arena.c
+index 1234567..abcdefg 100644
+--- a/deps/jemalloc/src/arena.c
++++ b/deps/jemalloc/src/arena.c
+@@ -4,6 +4,12 @@
+ #include "jemalloc/internal/pa.h"
+ #include "jemalloc/internal/ql.h"
+
++#ifdef ENABLE_DRAINPROF
++#include <drainprof.h>
++/* Declared in extent.c */
++extern drainprof *g_drainprof;
++#endif
++
+ /******************************************************************************/
+ /* Data. */
+
+@@ -1175,6 +1181,23 @@ arena_malloc_small(tsdn_t *tsdn, arena_t *arena, szind_t binind, bool zero) {
+ 	}
+ 	malloc_mutex_unlock(tsdn, &bin->lock);
+
++#ifdef ENABLE_DRAINPROF
++	/* Track allocation within extent for drainability */
++	if (ret != NULL && g_drainprof != NULL) {
++		/* Look up which extent this allocation belongs to */
++		edata_t *edata = emap_edata_lookup(tsdn, &arena->emap, ret);
++		if (edata != NULL) {
++			void *extent_addr = edata_addr_get(edata);
++			uint64_t extent_id = (uint64_t)extent_addr;
++			uint64_t alloc_id = (uint64_t)ret;
++			size_t size = usize;
++
++			/* Register this allocation in the extent's granule */
++			drainprof_alloc_register(g_drainprof, extent_id, alloc_id, size);
++		}
++	}
++#endif
++
+ 	if (fresh_slab != NULL) {
+ 		/*
+ 		 * When we reach here, another thread won the race and
+@@ -1384,6 +1407,23 @@ arena_bin_lower_slab(tsdn_t *tsdn, arena_t *arena, edata_t *slab,
+
+ void
+ arena_dalloc_small(tsdn_t *tsdn, void *ptr) {
++#ifdef ENABLE_DRAINPROF
++	/* Track deallocation for drainability measurement */
++	if (g_drainprof != NULL) {
++		/* Look up which extent this allocation belongs to */
++		edata_t *edata = emap_edata_lookup(tsdn, &arena_emap_global, ptr);
++		if (edata != NULL) {
++			void *extent_addr = edata_addr_get(edata);
++			uint64_t extent_id = (uint64_t)extent_addr;
++			uint64_t alloc_id = (uint64_t)ptr;
++
++			/* Deregister this allocation from the extent's granule */
++			drainprof_alloc_deregister(g_drainprof, extent_id, alloc_id);
++		}
++	}
++#endif
++
++	/* Original deallocation logic */
+ 	edata_t *edata = emap_edata_lookup(tsdn, &arena_emap_global, ptr);
+ 	szind_t binind = edata_szind_get(edata);
+ 	bin_t *bin = arena_bin_choose_lock(tsdn, edata_arena_get(edata),
+@@ -1392,6 +1432,29 @@ arena_dalloc_small(tsdn_t *tsdn, void *ptr) {
+ 	if (config_stats) {
+ 		bin->stats.ndalloc++;
+ 		bin->stats.curregs--;
++	}
++
++	arena_dalloc_bin(tsdn, edata_arena_get(edata), edata, ptr);
++	bin_infos_t *binfos = edata_binshard_get(edata);
++	malloc_mutex_unlock(tsdn, &bin->lock);
++}
++
++#ifdef ENABLE_DRAINPROF
++/* Expose DSR to Redis INFO command */
++double
++jemalloc_get_drainprof_dsr(void) {
++	if (g_drainprof == NULL) {
++		return -1.0; /* Not initialized */
++	}
++
++	drainprof_snapshot_t snap;
++	drainprof_snapshot(g_drainprof, &snap);
++	return snap.dsr;
++}
++
++void
++jemalloc_get_drainprof_stats(uint64_t *total_closes, uint64_t *drainable_closes, uint64_t *pinned_closes) {
++	if (g_drainprof == NULL) {
++		*total_closes = 0;
++		*drainable_closes = 0;
++		*pinned_closes = 0;
++		return;
++	}
++
++	drainprof_snapshot_t snap;
++	drainprof_snapshot(g_drainprof, &snap);
++	*total_closes = snap.total_closes;
++	*drainable_closes = snap.drainable_closes;
++	*pinned_closes = snap.pinned_closes;
++}
++#endif
+diff --git a/deps/jemalloc/include/jemalloc/jemalloc.h.in b/deps/jemalloc/include/jemalloc/jemalloc.h.in
+index 1234567..abcdefg 100644
+--- a/deps/jemalloc/include/jemalloc/jemalloc.h.in
++++ b/deps/jemalloc/include/jemalloc/jemalloc.h.in
+@@ -300,6 +300,12 @@ JEMALLOC_EXPORT size_t JEMALLOC_NOTHROW je_sallocx(const void *ptr,
+     int flags) JEMALLOC_ATTR(pure);
+ JEMALLOC_EXPORT void JEMALLOC_NOTHROW je_dallocx(void *ptr, int flags);
+ JEMALLOC_EXPORT void JEMALLOC_NOTHROW je_sdallocx(void *ptr, size_t size,
+     int flags);
+ JEMALLOC_EXPORT size_t JEMALLOC_NOTHROW je_nallocx(size_t size, int flags)
+     JEMALLOC_ATTR(malloc);
++
++#ifdef ENABLE_DRAINPROF
++/* libdrainprof API for Redis INFO command */
++JEMALLOC_EXPORT double JEMALLOC_NOTHROW jemalloc_get_drainprof_dsr(void);
++JEMALLOC_EXPORT void JEMALLOC_NOTHROW jemalloc_get_drainprof_stats(
++    uint64_t *total_closes, uint64_t *drainable_closes, uint64_t *pinned_closes);
++#endif

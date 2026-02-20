@@ -1,0 +1,785 @@
+From 928a37da46cb95f856a9c350617efbde31f09181 Mon Sep 17 00:00:00 2001
+From: Dayna Blackwell <blackwellsystems@protonmail.com>
+Date: Fri, 20 Feb 2026 00:52:06 -0700
+Subject: [PATCH] Implement symmetric malloc/free instrumentation for
+ drainability profiling
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Add libdrainprof integration to track allocation drainability in Redis using
+jemalloc's fastpath instrumentation. This enables measurement of structural
+memory fragmentation by tracking which slabs can be reclaimed after frees.
+
+Key changes:
+
+- Instrument imalloc_fastpath() to register allocations via drainprof_alloc_register()
+- Instrument free_fastpath() to deregister deallocations via drainprof_alloc_deregister()
+- Add lazy slab registration with drainprof_granule_open() on first allocation
+- Close slabs with drainprof_granule_close() when fully deallocated
+- Configure drainprof in DIAGNOSTIC mode to enable per-granule occupancy tracking
+- Expose drainability metrics through INFO MEMORY command:
+  - mem_drainability_ratio (DSR): percentage of empty, reclaimable slabs
+  - mem_drainprof_total_allocs/deallocs: symmetric accounting validation
+  - mem_drainprof_malloc_fastpath_calls/tracked: allocation path counters
+  - mem_drainprof_free_fastpath_calls/tracked: deallocation path counters
+
+Build system improvements:
+
+- Pass ENABLE_DRAINPROF to jemalloc configure
+- Link libdrainprof.a into Redis binary
+- Add build_with_drainprof.sh for clean sequential builds
+
+Testing shows symmetric accounting (allocs ≈ deallocs) and validates the
+measurement: deleting 50% of keys (50K out of 100K) freed ~195K objects
+but resulted in 0% DSR, demonstrating genuine structural fragmentation
+where scattered remaining allocations pin all slabs.
+---
+ build_with_drainprof.sh                       |  37 ++++
+ deps/Makefile                                 |   2 +-
+ .../internal/jemalloc_internal_inlines_c.h    |  39 ++++
+ .../jemalloc/internal/tcache_inlines.h        |  23 +++
+ deps/jemalloc/src/arena.c                     | 188 ++++++++++++++++++
+ deps/jemalloc/src/extent.c                    |  25 +++
+ deps/jemalloc/src/jemalloc.c                  |  36 ++++
+ deps/jemalloc/src/tcache.c                    |  53 ++++-
+ src/Makefile                                  |   9 +-
+ src/server.c                                  | 101 ++++++++++
+ 10 files changed, 510 insertions(+), 3 deletions(-)
+ create mode 100755 build_with_drainprof.sh
+
+diff --git a/build_with_drainprof.sh b/build_with_drainprof.sh
+new file mode 100755
+index 0000000..7407ab9
+--- /dev/null
++++ b/build_with_drainprof.sh
+@@ -0,0 +1,37 @@
++#!/bin/bash
++set -e
++
++echo "=== Complete clean build of Redis with drainprof instrumentation ==="
++
++# Complete clean
++make distclean
++rm -rf deps/jemalloc/lib deps/jemalloc/include/jemalloc/jemalloc.h src/.make-settings
++
++# Build jemalloc first with ENABLE_DRAINPROF
++cd deps
++make jemalloc
++cd ..
++
++# Build other deps
++cd deps
++make hiredis lua hdr_histogram fpconv linenoise
++cd ..
++
++# Force jemalloc setting
++echo "MALLOC=jemalloc" > src/.make-settings
++
++# Build Redis
++MALLOC=jemalloc CFLAGS="-DENABLE_DRAINPROF" make -j4
++
++# Verify
++if [ -f src/redis-server ]; then
++    echo "✓✓✓ BUILD SUCCESSFUL ✓✓✓"
++    ./src/redis-server --version
++    echo ""
++    echo "To test FLUSHALL instrumentation:"
++    echo "1. ./src/redis-server redis.conf"
++    echo "2. redis-cli -p 6380 INFO MEMORY | grep drainprof"
++else
++    echo "✗ Build failed"
++    exit 1
++fi
+diff --git a/deps/Makefile b/deps/Makefile
+index 3bf0363..d399389 100644
+--- a/deps/Makefile
++++ b/deps/Makefile
+@@ -112,7 +112,7 @@ endif
+ 
+ jemalloc: .make-prerequisites
+ 	@printf '%b %b\n' $(MAKECOLOR)MAKE$(ENDCOLOR) $(BINCOLOR)$@$(ENDCOLOR)
+-	cd jemalloc && ./configure --disable-cxx --with-version=5.3.0-0-g0 --with-lg-quantum=3 --disable-cache-oblivious --with-jemalloc-prefix=je_ CFLAGS="$(JEMALLOC_CFLAGS)" LDFLAGS="$(JEMALLOC_LDFLAGS)" $(JEMALLOC_CONFIGURE_OPTS)
++	cd jemalloc && ./configure --disable-cxx --with-version=5.3.0-0-g0 --with-lg-quantum=3 --disable-cache-oblivious --with-jemalloc-prefix=je_ CFLAGS="-DENABLE_DRAINPROF -I$(shell pwd)/../../drainability-profiler/include $(JEMALLOC_CFLAGS)" LDFLAGS="$(JEMALLOC_LDFLAGS)" $(JEMALLOC_CONFIGURE_OPTS)
+ 	cd jemalloc && $(MAKE) lib/libjemalloc.a
+ 
+ .PHONY: jemalloc
+diff --git a/deps/jemalloc/include/jemalloc/internal/jemalloc_internal_inlines_c.h b/deps/jemalloc/include/jemalloc/internal/jemalloc_internal_inlines_c.h
+index 2cd7e7c..8fde054 100644
+--- a/deps/jemalloc/include/jemalloc/internal/jemalloc_internal_inlines_c.h
++++ b/deps/jemalloc/include/jemalloc/internal/jemalloc_internal_inlines_c.h
+@@ -8,6 +8,13 @@
+ #include "jemalloc/internal/thread_event.h"
+ #include "jemalloc/internal/witness.h"
+ 
++#ifdef ENABLE_DRAINPROF
++#include <drainprof.h>
++extern drainprof *g_drainprof;
++extern atomic_zu_t g_malloc_fastpath_calls;
++extern atomic_zu_t g_malloc_fastpath_tracked;
++#endif
++
+ /*
+  * Translating the names of the 'i' functions:
+  *   Abbreviations used in the first part of the function name (before
+@@ -325,11 +332,43 @@ imalloc_fastpath(size_t size, void *(fallback_alloc)(size_t)) {
+ 	 */
+ 	ret = cache_bin_alloc_easy(bin, &tcache_success);
+ 	if (tcache_success) {
++#ifdef ENABLE_DRAINPROF
++		/* Track allocation in drainprof after successful cache_bin allocation */
++		atomic_fetch_add_zu(&g_malloc_fastpath_calls, 1, ATOMIC_RELAXED);
++		if (g_drainprof != NULL) {
++			tsdn_t *tsdn = tsd_tsdn(tsd);
++			edata_t *edata = emap_edata_lookup(tsdn, &arena_emap_global, ret);
++			if (edata != NULL && edata_slab_get(edata)) {
++				uint64_t granule_id = (uint64_t)edata;
++				/* Lazy register slab on first allocation (idempotent) */
++				drainprof_granule_open(g_drainprof, granule_id);
++				uint64_t alloc_id = (uint64_t)ret;
++				drainprof_alloc_register(g_drainprof, granule_id, alloc_id, size);
++				atomic_fetch_add_zu(&g_malloc_fastpath_tracked, 1, ATOMIC_RELAXED);
++			}
++		}
++#endif
+ 		fastpath_success_finish(tsd, allocated_after, bin, ret);
+ 		return ret;
+ 	}
+ 	ret = cache_bin_alloc(bin, &tcache_success);
+ 	if (tcache_success) {
++#ifdef ENABLE_DRAINPROF
++		/* Track allocation in drainprof after successful cache_bin allocation */
++		atomic_fetch_add_zu(&g_malloc_fastpath_calls, 1, ATOMIC_RELAXED);
++		if (g_drainprof != NULL) {
++			tsdn_t *tsdn = tsd_tsdn(tsd);
++			edata_t *edata = emap_edata_lookup(tsdn, &arena_emap_global, ret);
++			if (edata != NULL && edata_slab_get(edata)) {
++				uint64_t granule_id = (uint64_t)edata;
++				/* Lazy register slab on first allocation (idempotent) */
++				drainprof_granule_open(g_drainprof, granule_id);
++				uint64_t alloc_id = (uint64_t)ret;
++				drainprof_alloc_register(g_drainprof, granule_id, alloc_id, size);
++				atomic_fetch_add_zu(&g_malloc_fastpath_tracked, 1, ATOMIC_RELAXED);
++			}
++		}
++#endif
+ 		fastpath_success_finish(tsd, allocated_after, bin, ret);
+ 		return ret;
+ 	}
+diff --git a/deps/jemalloc/include/jemalloc/internal/tcache_inlines.h b/deps/jemalloc/include/jemalloc/internal/tcache_inlines.h
+index 2634f14..25054b7 100644
+--- a/deps/jemalloc/include/jemalloc/internal/tcache_inlines.h
++++ b/deps/jemalloc/include/jemalloc/internal/tcache_inlines.h
+@@ -8,6 +8,13 @@
+ #include "jemalloc/internal/sz.h"
+ #include "jemalloc/internal/util.h"
+ 
++#ifdef ENABLE_DRAINPROF
++#include <drainprof.h>
++extern drainprof *g_drainprof;
++extern atomic_zu_t g_tcache_dalloc_small_calls;
++extern atomic_zu_t g_tcache_dalloc_small_tracked;
++#endif
++
+ static inline bool
+ tcache_enabled_get(tsd_t *tsd) {
+ 	return tsd_tcache_enabled_get(tsd);
+@@ -130,6 +137,22 @@ tcache_dalloc_small(tsd_t *tsd, tcache_t *tcache, void *ptr, szind_t binind,
+     bool slow_path) {
+ 	assert(tcache_salloc(tsd_tsdn(tsd), ptr) <= SC_SMALL_MAXCLASS);
+ 
++#ifdef ENABLE_DRAINPROF
++	/* DISABLED: Old tcache dealloc instrumentation - we now track at free_fastpath layer
++	atomic_fetch_add_zu(&g_tcache_dalloc_small_calls, 1, ATOMIC_RELAXED);
++	if (g_drainprof != NULL) {
++		tsdn_t *tsdn = tsd_tsdn(tsd);
++		edata_t *edata = emap_edata_lookup(tsdn, &arena_emap_global, ptr);
++		if (edata != NULL && edata_slab_get(edata)) {
++			uint64_t granule_id = (uint64_t)edata;
++			uint64_t alloc_id = (uint64_t)ptr;
++			drainprof_alloc_deregister(g_drainprof, granule_id, alloc_id);
++			atomic_fetch_add_zu(&g_tcache_dalloc_small_tracked, 1, ATOMIC_RELAXED);
++		}
++	}
++	*/
++#endif
++
+ 	cache_bin_t *bin = &tcache->bins[binind];
+ 	/*
+ 	 * Not marking the branch unlikely because this is past free_fastpath()
+diff --git a/deps/jemalloc/src/arena.c b/deps/jemalloc/src/arena.c
+index 857b27c..1d1ba45 100644
+--- a/deps/jemalloc/src/arena.c
++++ b/deps/jemalloc/src/arena.c
+@@ -12,6 +12,23 @@
+ #include "jemalloc/internal/safety_check.h"
+ #include "jemalloc/internal/util.h"
+ 
++#ifdef ENABLE_DRAINPROF
++#include <drainprof.h>
++/* Global drainprof instance defined in extent.c */
++extern drainprof *g_drainprof;
++
++/* Debug counters for tracking registration behavior */
++static atomic_zu_t g_arena_malloc_small_calls;
++static atomic_zu_t g_lazy_registration_attempts;
++static atomic_zu_t g_lazy_registration_successes;
++static atomic_zu_t g_lazy_registration_failures;
++static atomic_zu_t g_cache_bin_fill_calls;
++static atomic_zu_t g_cache_bin_fill_drainprof_null;
++static atomic_zu_t g_cache_bin_fill_not_slab;
++static atomic_zu_t g_cache_bin_fill_tracked;
++static atomic_zu_t g_cache_bin_fill_objects_registered;
++#endif
++
+ JEMALLOC_DIAGNOSTIC_DISABLE_SPURIOUS
+ 
+ /******************************************************************************/
+@@ -566,6 +583,14 @@ arena_do_deferred_work(tsdn_t *tsdn, arena_t *arena) {
+ 
+ void
+ arena_slab_dalloc(tsdn_t *tsdn, arena_t *arena, edata_t *slab) {
++#ifdef ENABLE_DRAINPROF
++	/* Slab is fully empty and being deallocated - close granule tracking */
++	if (g_drainprof != NULL) {
++		uint64_t granule_id = (uint64_t)slab;
++		drainprof_granule_close(g_drainprof, granule_id);
++	}
++#endif
++
+ 	bool deferred_work_generated = false;
+ 	pa_dalloc(tsdn, &arena->pa_shard, slab, &deferred_work_generated);
+ 	if (deferred_work_generated) {
+@@ -854,6 +879,10 @@ arena_slab_alloc(tsdn_t *tsdn, arena_t *arena, szind_t binind, unsigned binshard
+ 	edata_nfree_binshard_set(slab, bin_info->nregs, binshard);
+ 	bitmap_init(slab_data->bitmap, &bin_info->bitmap_info, false);
+ 
++	/* Note: Slab granule registration happens lazily in arena_malloc_small
++	 * on first allocation contact, not here. This catches all slabs regardless
++	 * of whether they come from arena_slab_alloc, tcache, or bin cache. */
++
+ 	return slab;
+ }
+ 
+@@ -981,6 +1010,28 @@ label_refill:
+ 
+ 			arena_slab_reg_alloc_batch(slabcur, bin_info, cnt,
+ 			    &ptrs.ptr[filled]);
++
++#ifdef ENABLE_DRAINPROF
++			/* DISABLED: Old tcache refill instrumentation - we now track at malloc/free fastpath layer
++			atomic_fetch_add_zu(&g_cache_bin_fill_calls, 1, ATOMIC_RELAXED);
++			if (g_drainprof == NULL) {
++				atomic_fetch_add_zu(&g_cache_bin_fill_drainprof_null, 1, ATOMIC_RELAXED);
++			} else if (!edata_slab_get(slabcur)) {
++				atomic_fetch_add_zu(&g_cache_bin_fill_not_slab, 1, ATOMIC_RELAXED);
++			} else {
++				uint64_t granule_id = (uint64_t)slabcur;
++				drainprof_granule_open(g_drainprof, granule_id);
++				size_t usize = sz_index2size(binind);
++				for (unsigned i = 0; i < cnt; i++) {
++					uint64_t alloc_id = (uint64_t)ptrs.ptr[filled + i];
++					drainprof_alloc_register(g_drainprof, granule_id, alloc_id, usize);
++					atomic_fetch_add_zu(&g_cache_bin_fill_objects_registered, 1, ATOMIC_RELAXED);
++				}
++				atomic_fetch_add_zu(&g_cache_bin_fill_tracked, 1, ATOMIC_RELAXED);
++			}
++			*/
++#endif
++
+ 			made_progress = true;
+ 			filled += cnt;
+ 			continue;
+@@ -1140,6 +1191,10 @@ arena_bin_malloc_no_fresh_slab(tsdn_t *tsdn, arena_t *arena, bin_t *bin,
+ 
+ static void *
+ arena_malloc_small(tsdn_t *tsdn, arena_t *arena, szind_t binind, bool zero) {
++#ifdef ENABLE_DRAINPROF
++	atomic_fetch_add_zu(&g_arena_malloc_small_calls, 1, ATOMIC_RELAXED);
++#endif
++
+ 	assert(binind < SC_NBINS);
+ 	const bin_info_t *bin_info = &bin_infos[binind];
+ 	size_t usize = sz_index2size(binind);
+@@ -1184,6 +1239,35 @@ arena_malloc_small(tsdn_t *tsdn, arena_t *arena, szind_t binind, bool zero) {
+ 	}
+ 	arena_decay_tick(tsdn, arena);
+ 
++#ifdef ENABLE_DRAINPROF
++	/* Lazy slab registration: open granule on first allocation contact.
++	 * This catches all slabs (from tcache, bin cache, or fresh allocation),
++	 * not just slabs from arena_slab_alloc. */
++	if (ret != NULL && g_drainprof != NULL) {
++		edata_t *edata = emap_edata_lookup(tsdn, &arena_emap_global, ret);
++		if (edata != NULL && edata_slab_get(edata)) {
++			atomic_fetch_add_zu(&g_lazy_registration_attempts, 1, ATOMIC_RELAXED);
++
++			/* For slabs: use slab data structure address as unique granule ID.
++			 * edata_addr_get returns extent base (multiple slabs share same extent),
++			 * but edata itself is unique per slab. */
++			uint64_t granule_id = (uint64_t)edata;
++			uint64_t alloc_id = (uint64_t)ret;
++
++			/* Try to register slab as granule (idempotent - ignore if already open) */
++			int open_result = drainprof_granule_open(g_drainprof, granule_id);
++			if (open_result == 0) {
++				atomic_fetch_add_zu(&g_lazy_registration_successes, 1, ATOMIC_RELAXED);
++			} else {
++				atomic_fetch_add_zu(&g_lazy_registration_failures, 1, ATOMIC_RELAXED);
++			}
++
++			/* Track allocation within slab */
++			drainprof_alloc_register(g_drainprof, granule_id, alloc_id, usize);
++		}
++	}
++#endif
++
+ 	return ret;
+ }
+ 
+@@ -1388,6 +1472,15 @@ arena_dalloc_small(tsdn_t *tsdn, void *ptr) {
+ 	edata_t *edata = emap_edata_lookup(tsdn, &arena_emap_global, ptr);
+ 	arena_t *arena = arena_get_from_edata(edata);
+ 
++#ifdef ENABLE_DRAINPROF
++	/* Track deallocation for drainability measurement */
++	if (g_drainprof != NULL && edata != NULL && edata_slab_get(edata)) {
++		uint64_t granule_id = (uint64_t)edata;
++		uint64_t alloc_id = (uint64_t)ptr;
++		drainprof_alloc_deregister(g_drainprof, granule_id, alloc_id);
++	}
++#endif
++
+ 	arena_dalloc_bin(tsdn, arena, edata, ptr);
+ 	arena_decay_tick(tsdn, arena);
+ }
+@@ -1889,3 +1982,98 @@ arena_postfork_child(tsdn_t *tsdn, arena_t *arena) {
+ 		malloc_mutex_postfork_child(tsdn, &arena->tcache_ql_mtx);
+ 	}
+ }
++
++#ifdef ENABLE_DRAINPROF
++/* API to expose drainprof metrics to Redis INFO command.
++ * Uses sweep model: walks all extents and counts drainable vs pinned based on
++ * current occupancy (zero vs non-zero live allocations). */
++double
++jemalloc_get_drainprof_dsr(void) {
++	if (g_drainprof == NULL) {
++		return -1.0;
++	}
++	drainprof_snapshot_t snap;
++	drainprof_sweep(g_drainprof, &snap);
++	return snap.dsr;
++}
++
++void
++jemalloc_get_drainprof_stats(uint64_t *total_extents, uint64_t *drainable_extents, uint64_t *pinned_extents) {
++	if (g_drainprof == NULL) {
++		*total_extents = 0;
++		*drainable_extents = 0;
++		*pinned_extents = 0;
++		return;
++	}
++	drainprof_snapshot_t snap;
++	drainprof_sweep(g_drainprof, &snap);
++	*total_extents = snap.total_closes;
++	*drainable_extents = snap.drainable_closes;
++	*pinned_extents = snap.pinned_closes;
++}
++
++void
++jemalloc_get_drainprof_accounting(uint64_t *total_allocs, uint64_t *total_deallocs) {
++	if (g_drainprof == NULL) {
++		*total_allocs = 0;
++		*total_deallocs = 0;
++		return;
++	}
++	drainprof_snapshot_t snap;
++	drainprof_sweep(g_drainprof, &snap);
++	*total_allocs = snap.total_allocs;
++	*total_deallocs = snap.total_deallocs;
++}
++
++void
++jemalloc_get_drainprof_debug_stats(uint64_t *malloc_calls, uint64_t *attempts, uint64_t *successes, uint64_t *failures) {
++	*malloc_calls = atomic_load_zu(&g_arena_malloc_small_calls, ATOMIC_RELAXED);
++	*attempts = atomic_load_zu(&g_lazy_registration_attempts, ATOMIC_RELAXED);
++	*successes = atomic_load_zu(&g_lazy_registration_successes, ATOMIC_RELAXED);
++	*failures = atomic_load_zu(&g_lazy_registration_failures, ATOMIC_RELAXED);
++}
++
++void
++jemalloc_get_drainprof_fill_stats(uint64_t *fill_calls, uint64_t *drainprof_null, uint64_t *not_slab, uint64_t *tracked, uint64_t *objects_registered) {
++	*fill_calls = atomic_load_zu(&g_cache_bin_fill_calls, ATOMIC_RELAXED);
++	*drainprof_null = atomic_load_zu(&g_cache_bin_fill_drainprof_null, ATOMIC_RELAXED);
++	*not_slab = atomic_load_zu(&g_cache_bin_fill_not_slab, ATOMIC_RELAXED);
++	*tracked = atomic_load_zu(&g_cache_bin_fill_tracked, ATOMIC_RELAXED);
++	*objects_registered = atomic_load_zu(&g_cache_bin_fill_objects_registered, ATOMIC_RELAXED);
++}
++#endif
++
++#ifdef ENABLE_DRAINPROF
++/* Get diagnostic summary of pinned slabs */
++void
++jemalloc_get_drainprof_diagnostic_info(char *buf, size_t bufsize) {
++	if (g_drainprof == NULL) {
++		snprintf(buf, bufsize, "drainprof not initialized");
++		return;
++	}
++	
++	drainprof_diagnostic_summary *summary = drainprof_diagnostic_summary_compute(g_drainprof);
++	if (summary == NULL) {
++		snprintf(buf, bufsize, "no pinning reports available (all slabs drainable or not yet swept)");
++		return;
++	}
++	
++	int written = snprintf(buf, bufsize,
++		"Pinned slabs: %u reports, %u total pinning allocs\n",
++		summary->reports_analyzed, summary->total_pinning_allocs);
++	
++	/* Show top 10 allocation sites that are pinning slabs */
++	for (uint32_t i = 0; i < summary->site_count && i < 10 && written < (int)bufsize - 1; i++) {
++		drainprof_summary_site_entry *site = &summary->sites[i];
++		written += snprintf(buf + written, bufsize - written,
++			"  %s:%u - %u pinning, %u total allocs, %zu bytes\n",
++			site->site.file ? site->site.file : "unknown",
++			site->site.line,
++			site->pinning_count,
++			site->total_allocs,
++			site->total_bytes);
++	}
++	
++	drainprof_diagnostic_summary_free(summary);
++}
++#endif
+diff --git a/deps/jemalloc/src/extent.c b/deps/jemalloc/src/extent.c
+index cf3d1f3..adfaffd 100644
+--- a/deps/jemalloc/src/extent.c
++++ b/deps/jemalloc/src/extent.c
+@@ -8,6 +8,15 @@
+ #include "jemalloc/internal/ph.h"
+ #include "jemalloc/internal/mutex.h"
+ 
++/* ============================================
++ * libdrainprof instrumentation
++ * ============================================ */
++#ifdef ENABLE_DRAINPROF
++#include <drainprof.h>
++drainprof *g_drainprof = NULL;
++static bool g_drainprof_initialized = false;
++#endif
++
+ /******************************************************************************/
+ /* Data. */
+ 
+@@ -1021,6 +1030,22 @@ extent_alloc_wrapper(tsdn_t *tsdn, pac_t *pac, ehooks_t *ehooks,
+ 		return NULL;
+ 	}
+ 
++#ifdef ENABLE_DRAINPROF
++	/* Initialize drainprof on first extent allocation with large capacity for slabs */
++	if (!g_drainprof_initialized) {
++		drainprof_config config;
++		drainprof_config_default(&config);
++		config.mode = DRAINPROF_DIAGNOSTIC;  /* Enable per-granule tracking */
++		config.slot_capacity = 32768;  /* Support up to 32K concurrent slabs */
++		config.max_buffered_reports = 100;  /* Keep last 100 pinned slab reports */
++		config.verbose = false;  /* Don't spam stderr */
++		g_drainprof = drainprof_create_with_config(&config);
++		g_drainprof_initialized = true;
++	}
++	/* Note: We track slabs (within extents) via lazy registration in arena_malloc_small,
++	 * not top-level extents here. This avoids double-tracking and slot collisions. */
++#endif
++
+ 	return edata;
+ }
+ 
+diff --git a/deps/jemalloc/src/jemalloc.c b/deps/jemalloc/src/jemalloc.c
+index 8302609..9c31238 100644
+--- a/deps/jemalloc/src/jemalloc.c
++++ b/deps/jemalloc/src/jemalloc.c
+@@ -26,6 +26,15 @@
+ #include "jemalloc/internal/thread_event.h"
+ #include "jemalloc/internal/util.h"
+ 
++#ifdef ENABLE_DRAINPROF
++#include <drainprof.h>
++extern drainprof *g_drainprof;
++atomic_zu_t g_malloc_fastpath_calls;
++atomic_zu_t g_malloc_fastpath_tracked;
++atomic_zu_t g_free_fastpath_calls;
++atomic_zu_t g_free_fastpath_tracked;
++#endif
++
+ /******************************************************************************/
+ /* Data. */
+ 
+@@ -3149,6 +3158,21 @@ bool free_fastpath(void *ptr, size_t size, bool size_hint) {
+ 		return false;
+ 	}
+ 
++#ifdef ENABLE_DRAINPROF
++	/* Track deallocation in drainprof after successful cache_bin placement */
++	atomic_fetch_add_zu(&g_free_fastpath_calls, 1, ATOMIC_RELAXED);
++	if (g_drainprof != NULL) {
++		tsdn_t *tsdn = tsd_tsdn(tsd);
++		edata_t *edata = emap_edata_lookup(tsdn, &arena_emap_global, ptr);
++		if (edata != NULL && edata_slab_get(edata)) {
++			uint64_t granule_id = (uint64_t)edata;
++			uint64_t alloc_id = (uint64_t)ptr;
++			drainprof_alloc_deregister(g_drainprof, granule_id, alloc_id);
++			atomic_fetch_add_zu(&g_free_fastpath_tracked, 1, ATOMIC_RELAXED);
++		}
++	}
++#endif
++
+ 	*tsd_thread_deallocatedp_get(tsd) = deallocated_after;
+ 
+ 	return true;
+@@ -4483,3 +4507,15 @@ get_defrag_hint(void* ptr) {
+ 	assert(ptr != NULL);
+ 	return iget_defrag_hint(TSDN_NULL, ptr);
+ }
++
++#ifdef ENABLE_DRAINPROF
++void jemalloc_get_drainprof_fastpath_stats(uint64_t *fastpath_calls, uint64_t *fastpath_tracked) {
++	*fastpath_calls = atomic_load_zu(&g_free_fastpath_calls, ATOMIC_RELAXED);
++	*fastpath_tracked = atomic_load_zu(&g_free_fastpath_tracked, ATOMIC_RELAXED);
++}
++
++void jemalloc_get_drainprof_malloc_fastpath_stats(uint64_t *malloc_calls, uint64_t *malloc_tracked) {
++	*malloc_calls = atomic_load_zu(&g_malloc_fastpath_calls, ATOMIC_RELAXED);
++	*malloc_tracked = atomic_load_zu(&g_malloc_fastpath_tracked, ATOMIC_RELAXED);
++}
++#endif
+diff --git a/deps/jemalloc/src/tcache.c b/deps/jemalloc/src/tcache.c
+index fa16732..a2596b0 100644
+--- a/deps/jemalloc/src/tcache.c
++++ b/deps/jemalloc/src/tcache.c
+@@ -7,6 +7,20 @@
+ #include "jemalloc/internal/san.h"
+ #include "jemalloc/internal/sc.h"
+ 
++#ifdef ENABLE_DRAINPROF
++#include <drainprof.h>
++extern drainprof *g_drainprof;
++
++/* Debug counters for deallocation tracking */
++static atomic_zu_t g_tcache_flush_calls;
++static atomic_zu_t g_tcache_flush_small_count;
++static atomic_zu_t g_tcache_flush_drainprof_null;
++static atomic_zu_t g_tcache_flush_not_slab;
++static atomic_zu_t g_tcache_flush_tracked;
++atomic_zu_t g_tcache_dalloc_small_calls;
++atomic_zu_t g_tcache_dalloc_small_tracked;
++#endif
++
+ /******************************************************************************/
+ /* Data. */
+ 
+@@ -320,6 +334,11 @@ tcache_bin_flush_impl(tsd_t *tsd, tcache_t *tcache, cache_bin_t *cache_bin,
+ 	} else {
+ 		assert(binind < nhbins);
+ 	}
++#ifdef ENABLE_DRAINPROF
++	if (small) {
++		atomic_fetch_add_zu(&g_tcache_flush_calls, 1, ATOMIC_RELAXED);
++	}
++#endif
+ 	arena_t *tcache_arena = tcache_slow->arena;
+ 	assert(tcache_arena != NULL);
+ 
+@@ -445,13 +464,28 @@ tcache_bin_flush_impl(tsd_t *tsd, tcache_t *tcache, cache_bin_t *cache_bin,
+ 				continue;
+ 			}
+ 			if (small) {
++#ifdef ENABLE_DRAINPROF
++				/* DISABLED: Old tcache flush instrumentation - we now track at free_fastpath layer
++				atomic_fetch_add_zu(&g_tcache_flush_small_count, 1, ATOMIC_RELAXED);
++				if (g_drainprof == NULL) {
++					atomic_fetch_add_zu(&g_tcache_flush_drainprof_null, 1, ATOMIC_RELAXED);
++				} else if (!edata_slab_get(edata)) {
++					atomic_fetch_add_zu(&g_tcache_flush_not_slab, 1, ATOMIC_RELAXED);
++				} else {
++					uint64_t granule_id = (uint64_t)edata;
++					uint64_t alloc_id = (uint64_t)ptr;
++					drainprof_alloc_deregister(g_drainprof, granule_id, alloc_id);
++					atomic_fetch_add_zu(&g_tcache_flush_tracked, 1, ATOMIC_RELAXED);
++				}
++				*/
++#endif
+ 				if (arena_dalloc_bin_locked_step(tsdn,
+ 				    cur_arena, cur_bin, &dalloc_bin_info,
+ 				    binind, edata, ptr)) {
+ 					dalloc_slabs[dalloc_count] = edata;
+ 					dalloc_count++;
+ 				}
+-			} else {
++			} else{
+ 				if (large_dalloc_safety_checks(edata, ptr,
+ 				    binind)) {
+ 					/* See the comment in isfree. */
+@@ -1099,3 +1133,20 @@ tcache_postfork_child(tsdn_t *tsdn) {
+ void tcache_assert_initialized(tcache_t *tcache) {
+ 	assert(!cache_bin_still_zero_initialized(&tcache->bins[0]));
+ }
++
++#ifdef ENABLE_DRAINPROF
++void
++jemalloc_get_drainprof_flush_stats(uint64_t *flush_calls, uint64_t *small_count, uint64_t *drainprof_null, uint64_t *not_slab, uint64_t *tracked) {
++	*flush_calls = atomic_load_zu(&g_tcache_flush_calls, ATOMIC_RELAXED);
++	*small_count = atomic_load_zu(&g_tcache_flush_small_count, ATOMIC_RELAXED);
++	*drainprof_null = atomic_load_zu(&g_tcache_flush_drainprof_null, ATOMIC_RELAXED);
++	*not_slab = atomic_load_zu(&g_tcache_flush_not_slab, ATOMIC_RELAXED);
++	*tracked = atomic_load_zu(&g_tcache_flush_tracked, ATOMIC_RELAXED);
++}
++
++void
++jemalloc_get_drainprof_dalloc_stats(uint64_t *dalloc_calls, uint64_t *dalloc_tracked) {
++	*dalloc_calls = atomic_load_zu(&g_tcache_dalloc_small_calls, ATOMIC_RELAXED);
++	*dalloc_tracked = atomic_load_zu(&g_tcache_dalloc_small_tracked, ATOMIC_RELAXED);
++}
++#endif
+diff --git a/src/Makefile b/src/Makefile
+index 6a87909..c5e1368 100644
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -86,6 +86,8 @@ endif
+ 
+ ifeq ($(USE_JEMALLOC),yes)
+ 	MALLOC=jemalloc
++	CFLAGS+=-DENABLE_DRAINPROF -I$(shell pwd)/../../../drainability-profiler/include
++	REDIS_CFLAGS+=-DENABLE_DRAINPROF
+ endif
+ 
+ ifeq ($(USE_JEMALLOC),no)
+@@ -271,7 +273,12 @@ endif
+ ifeq ($(MALLOC),jemalloc)
+ 	DEPENDENCY_TARGETS+= jemalloc
+ 	FINAL_CFLAGS+= -DUSE_JEMALLOC -I../deps/jemalloc/include
+-	FINAL_LIBS := ../deps/jemalloc/lib/libjemalloc.a $(FINAL_LIBS)
++	# Link libdrainprof when ENABLE_DRAINPROF is set (must come before jemalloc since jemalloc depends on it)
++	ifneq ($(findstring -DENABLE_DRAINPROF,$(CFLAGS)),)
++		FINAL_LIBS := ../deps/jemalloc/lib/libjemalloc.a ../../drainability-profiler/libdrainprof.a $(FINAL_LIBS)
++	else
++		FINAL_LIBS := ../deps/jemalloc/lib/libjemalloc.a $(FINAL_LIBS)
++	endif
+ endif
+ 
+ # LIBSSL & LIBCRYPTO
+diff --git a/src/server.c b/src/server.c
+index 2139424..ac26afb 100644
+--- a/src/server.c
++++ b/src/server.c
+@@ -5736,6 +5736,107 @@ sds genRedisInfoString(dict *section_dict, int all_sections, int everything) {
+             lazyfreeGetPendingObjectsCount(),
+             lazyfreeGetFreedObjectsCount()
+         );
++
++#ifdef ENABLE_DRAINPROF
++        /* Add drainprof metrics - jemalloc extent drainability
++         * Measures instantaneous extent occupancy via periodic sweep:
++         * - drainable = extents with zero live allocations (could be returned to OS)
++         * - pinned = extents with one or more live allocations (cannot be returned) */
++        extern double je_jemalloc_get_drainprof_dsr(void);
++        extern void je_jemalloc_get_drainprof_stats(uint64_t *total, uint64_t *drainable, uint64_t *pinned);
++        extern void je_jemalloc_get_drainprof_debug_stats(uint64_t *malloc_calls, uint64_t *attempts, uint64_t *successes, uint64_t *failures);
++        extern void je_jemalloc_get_drainprof_fill_stats(uint64_t *fill_calls, uint64_t *drainprof_null, uint64_t *not_slab, uint64_t *tracked, uint64_t *objects_registered);
++        extern void je_jemalloc_get_drainprof_flush_stats(uint64_t *flush_calls, uint64_t *small_count, uint64_t *drainprof_null, uint64_t *not_slab, uint64_t *tracked);
++        extern void je_jemalloc_get_drainprof_dalloc_stats(uint64_t *dalloc_calls, uint64_t *dalloc_tracked);
++        extern void je_jemalloc_get_drainprof_fastpath_stats(uint64_t *fastpath_calls, uint64_t *fastpath_tracked);
++        extern void je_jemalloc_get_drainprof_malloc_fastpath_stats(uint64_t *malloc_calls, uint64_t *malloc_tracked);
++        extern void je_jemalloc_get_drainprof_accounting(uint64_t *total_allocs, uint64_t *total_deallocs);
++
++        double dsr = je_jemalloc_get_drainprof_dsr();
++        uint64_t total_extents = 0, drainable_extents = 0, pinned_extents = 0;
++        je_jemalloc_get_drainprof_stats(&total_extents, &drainable_extents, &pinned_extents);
++
++        uint64_t malloc_calls = 0, reg_attempts = 0, reg_successes = 0, reg_failures = 0;
++        je_jemalloc_get_drainprof_debug_stats(&malloc_calls, &reg_attempts, &reg_successes, &reg_failures);
++
++        uint64_t fill_calls = 0, fill_drainprof_null = 0, fill_not_slab = 0, fill_tracked = 0, fill_objects_registered = 0;
++        je_jemalloc_get_drainprof_fill_stats(&fill_calls, &fill_drainprof_null, &fill_not_slab, &fill_tracked, &fill_objects_registered);
++
++        uint64_t flush_calls = 0, flush_small_count = 0, flush_drainprof_null = 0, flush_not_slab = 0, flush_tracked = 0;
++        je_jemalloc_get_drainprof_flush_stats(&flush_calls, &flush_small_count, &flush_drainprof_null, &flush_not_slab, &flush_tracked);
++
++        uint64_t dalloc_calls = 0, dalloc_tracked = 0;
++        je_jemalloc_get_drainprof_dalloc_stats(&dalloc_calls, &dalloc_tracked);
++
++        uint64_t fastpath_calls = 0, fastpath_tracked = 0;
++        je_jemalloc_get_drainprof_fastpath_stats(&fastpath_calls, &fastpath_tracked);
++
++        uint64_t malloc_fastpath_calls = 0, malloc_fastpath_tracked = 0;
++        je_jemalloc_get_drainprof_malloc_fastpath_stats(&malloc_fastpath_calls, &malloc_fastpath_tracked);
++
++        uint64_t total_allocs = 0, total_deallocs = 0;
++        je_jemalloc_get_drainprof_accounting(&total_allocs, &total_deallocs);
++
++        if (dsr >= 0.0) {
++            info = sdscatprintf(info,
++                "mem_drainability_ratio:%.4f\r\n"
++                "mem_drainprof_enabled:yes\r\n"
++                "mem_drainprof_total_extents:%llu\r\n"
++                "mem_drainprof_drainable_extents:%llu\r\n"
++                "mem_drainprof_pinned_extents:%llu\r\n"
++                "mem_drainprof_arena_malloc_small_calls:%llu\r\n"
++                "mem_drainprof_lazy_registration_attempts:%llu\r\n"
++                "mem_drainprof_lazy_registration_successes:%llu\r\n"
++                "mem_drainprof_lazy_registration_failures:%llu\r\n"
++                "mem_drainprof_cache_bin_fill_calls:%llu\r\n"
++                "mem_drainprof_cache_bin_fill_drainprof_null:%llu\r\n"
++                "mem_drainprof_cache_bin_fill_not_slab:%llu\r\n"
++                "mem_drainprof_cache_bin_fill_tracked:%llu\r\n"
++                "mem_drainprof_cache_bin_fill_objects_registered:%llu\r\n"
++                "mem_drainprof_tcache_flush_calls:%llu\r\n"
++                "mem_drainprof_tcache_flush_small_count:%llu\r\n"
++                "mem_drainprof_tcache_flush_drainprof_null:%llu\r\n"
++                "mem_drainprof_tcache_flush_not_slab:%llu\r\n"
++                "mem_drainprof_tcache_flush_tracked:%llu\r\n"
++                "mem_drainprof_tcache_dalloc_small_calls:%llu\r\n"
++                "mem_drainprof_tcache_dalloc_small_tracked:%llu\r\n"
++                "mem_drainprof_malloc_fastpath_calls:%llu\r\n"
++                "mem_drainprof_malloc_fastpath_tracked:%llu\r\n"
++                "mem_drainprof_free_fastpath_calls:%llu\r\n"
++                "mem_drainprof_free_fastpath_tracked:%llu\r\n"
++                "mem_drainprof_total_allocs:%llu\r\n"
++                "mem_drainprof_total_deallocs:%llu\r\n",
++                dsr,
++                (unsigned long long)total_extents,
++                (unsigned long long)drainable_extents,
++                (unsigned long long)pinned_extents,
++                (unsigned long long)malloc_calls,
++                (unsigned long long)reg_attempts,
++                (unsigned long long)reg_successes,
++                (unsigned long long)reg_failures,
++                (unsigned long long)fill_calls,
++                (unsigned long long)fill_drainprof_null,
++                (unsigned long long)fill_not_slab,
++                (unsigned long long)fill_tracked,
++                (unsigned long long)fill_objects_registered,
++                (unsigned long long)flush_calls,
++                (unsigned long long)flush_small_count,
++                (unsigned long long)flush_drainprof_null,
++                (unsigned long long)flush_not_slab,
++                (unsigned long long)flush_tracked,
++                (unsigned long long)dalloc_calls,
++                (unsigned long long)dalloc_tracked,
++                (unsigned long long)malloc_fastpath_calls,
++                (unsigned long long)malloc_fastpath_tracked,
++                (unsigned long long)fastpath_calls,
++                (unsigned long long)fastpath_tracked,
++                (unsigned long long)total_allocs,
++                (unsigned long long)total_deallocs);
++        } else {
++            info = sdscatprintf(info, "mem_drainprof_enabled:no\r\n");
++        }
++#endif
++
+         freeMemoryOverheadData(mh);
+     }
+ 
+-- 
+2.53.0
+

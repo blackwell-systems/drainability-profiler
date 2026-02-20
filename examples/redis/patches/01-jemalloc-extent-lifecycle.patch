@@ -1,0 +1,76 @@
+diff --git a/deps/jemalloc/src/extent.c b/deps/jemalloc/src/extent.c
+index 1234567..abcdefg 100644
+--- a/deps/jemalloc/src/extent.c
++++ b/deps/jemalloc/src/extent.c
+@@ -1,6 +1,14 @@
+ #include "jemalloc/internal/jemalloc_preamble.h"
+ #include "jemalloc/internal/jemalloc_internal_includes.h"
+
++/* ============================================
++ * libdrainprof instrumentation
++ * ============================================ */
++#ifdef ENABLE_DRAINPROF
++#include <drainprof.h>
++static drainprof *g_drainprof = NULL;
++#endif
++
+ #include "jemalloc/internal/assert.h"
+ #include "jemalloc/internal/emap.h"
+ #include "jemalloc/internal/eset.h"
+@@ -988,6 +996,16 @@ extent_alloc_retained(tsdn_t *tsdn, pac_t *pac,
+ 	return edata;
+ }
+
++#ifdef ENABLE_DRAINPROF
++static void drainprof_init_once(void) {
++	if (g_drainprof == NULL) {
++		g_drainprof = drainprof_create();
++		/* In production mode, libdrainprof is thread-safe */
++		/* No need for mutex protection */
++	}
++}
++#endif
++
+ edata_t *
+ extent_alloc_wrapper(tsdn_t *tsdn, pac_t *pac, ehooks_t *ehooks,
+     void *new_addr, size_t size, size_t alignment, bool zero, bool *commit,
+@@ -1020,6 +1038,19 @@ extent_alloc_wrapper(tsdn_t *tsdn, pac_t *pac, ehooks_t *ehooks,
+ 		return NULL;
+ 	}
+
++#ifdef ENABLE_DRAINPROF
++	/* Track extent lifecycle for drainability measurement */
++	if (g_drainprof == NULL) {
++		drainprof_init_once();
++	}
++	if (g_drainprof != NULL) {
++		void *addr = edata_addr_get(edata);
++		uint64_t extent_id = (uint64_t)addr;
++		/* Open granule: this extent is now active */
++		drainprof_granule_open(g_drainprof, extent_id);
++	}
++#endif
++
+ 	return edata;
+ }
+
+@@ -1044,6 +1075,19 @@ extent_dalloc_wrapper(tsdn_t *tsdn, pac_t *pac, ehooks_t *ehooks,
+ 		 */
+ 		extent_deregister(tsdn, pac, edata);
+ 		if (!extent_dalloc_wrapper_try(tsdn, pac, ehooks, edata)) {
++#ifdef ENABLE_DRAINPROF
++			/* Extent successfully returned to OS or dirty pool */
++			if (g_drainprof != NULL) {
++				void *addr = edata_addr_get(edata);
++				uint64_t extent_id = (uint64_t)addr;
++				/* Close granule: check if it was drainable */
++				int drainable = drainprof_granule_close(g_drainprof, extent_id);
++				/* drainable should be 1 (fully empty) at this point */
++				/* If 0, we have a bug in tracking or jemalloc is returning non-empty extents */
++				(void)drainable; /* Avoid unused warning in production builds */
++			}
++#endif
++
+ 			return;
+ 		}
+ 		extent_reregister(tsdn, pac, edata);
